@@ -24,7 +24,7 @@ import java.util.List;
  * 앱은 이 클래스를 이름으로 불러 call(요청 JSON) 만 부른다. 앱과 엔진 사이에 같은 클래스를 나눠 갖지 않으므로
  * NewPipe 가 안쪽을 바꿔도 앱은 다시 깔 필요가 없다.
  *
- * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2}
+ * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?}
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -56,6 +56,7 @@ public final class Engine {
                 case "related": r = related(q.getString("id")); break;
                 case "suggest": r = suggest(q.getString("q")); break;
                 case "music": r = music(q.getString("q"), q.optInt("part", 0)); break;
+                case "shorts": r = shortsFeed(q); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -261,6 +262,68 @@ public final class Engine {
                     .put("views", s.getViewCount())
                     .put("thumb", bestThumb(s.getThumbnails())));
         }
+    }
+
+    // ---------- 쇼츠 피드 ----------
+    // 로그인 안 한 유튜브 웹이 주는 쇼츠 그대로(형님 2026-11-11 "진짜 쇼츠 그 스크롤하는 그걸 보자는 거야. 쇼츠 검색을 왜 하니").
+    // 처음: youtube.com/shorts/(또는 /shorts/<seed>) 쪽에서 첫 쇼츠, 이어 받기 표(sequenceContinuation), visitorData, 웹 판을 읽고
+    // reel/reel_watch_sequence 로 다음 쇼츠들. 이어서: 앱이 돌려준 표로 다음 묶음. 쇼츠 ID 만 돌려주고 제목 등은 streams 로.
+
+    private static final java.util.regex.Pattern P_VID = java.util.regex.Pattern.compile("\"videoId\":\"([\\w-]{11})\"");
+    private static final java.util.regex.Pattern P_SEQ = java.util.regex.Pattern.compile("\"sequenceContinuation\":\"([^\"]+)\"");
+    private static final java.util.regex.Pattern P_VD = java.util.regex.Pattern.compile("\"visitorData\":\"([^\"]+)\"");
+    private static final java.util.regex.Pattern P_CV = java.util.regex.Pattern.compile("\"INNERTUBE_CLIENT_VERSION\":\"([^\"]+)\"");
+
+    private static JSONObject shortsFeed(final JSONObject q) throws Exception {
+        String token = q.optString("token", "");
+        String vd = q.optString("vd", "");
+        String cv = q.optString("cv", "");
+        final JSONArray ids = new JSONArray();
+        if (token.isEmpty()) {
+            final String seed = q.optString("seed", "");
+            final java.util.Map<String, List<String>> h = new java.util.HashMap<>();
+            h.put("User-Agent", Collections.singletonList(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"));
+            h.put("Accept-Language", Collections.singletonList("ko-KR,ko;q=0.9"));
+            final String html = NewPipe.getDownloader().get(
+                    "https://www.youtube.com/shorts/" + seed + "?hl=ko&gl=KR", h).responseBody();
+            java.util.regex.Matcher m = P_VID.matcher(html);
+            if (m.find()) ids.put(m.group(1));
+            m = P_SEQ.matcher(html);
+            if (!m.find()) throw new IllegalStateException("쇼츠 피드를 찾지 못했습니다");
+            token = m.group(1);
+            m = P_VD.matcher(html);
+            if (m.find()) vd = m.group(1);
+            m = P_CV.matcher(html);
+            cv = m.find() ? m.group(1) : "2.20261106.00.00";
+        }
+        final JSONObject client = new JSONObject().put("clientName", "WEB").put("clientVersion", cv)
+                .put("hl", "ko").put("gl", "KR");
+        if (!vd.isEmpty()) client.put("visitorData", vd);
+        final JSONObject body = new JSONObject().put("context", new JSONObject().put("client", client))
+                .put("sequenceParams", token);
+        final java.util.Map<String, List<String>> h2 = new java.util.HashMap<>();
+        h2.put("Content-Type", Collections.singletonList("application/json"));
+        h2.put("Origin", Collections.singletonList("https://www.youtube.com"));
+        final String res = NewPipe.getDownloader().post(
+                "https://www.youtube.com/youtubei/v1/reel/reel_watch_sequence?prettyPrint=false", h2,
+                body.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)).responseBody();
+        final JSONObject r = new JSONObject(res);
+        final JSONArray entries = r.optJSONArray("entries");
+        final java.util.Set<String> seen = new java.util.HashSet<>();
+        for (int i = 0; i < ids.length(); i++) seen.add(ids.getString(i));
+        if (entries != null) for (int i = 0; i < entries.length(); i++) {
+            final JSONObject cmd = entries.optJSONObject(i) == null ? null : entries.optJSONObject(i).optJSONObject("command");
+            final JSONObject ep = cmd == null ? null : cmd.optJSONObject("reelWatchEndpoint");
+            final String id = ep == null ? "" : ep.optString("videoId", "");
+            if (!id.isEmpty() && seen.add(id)) ids.put(id);
+        }
+        String next = "";
+        final JSONObject ce = r.optJSONObject("continuationEndpoint");
+        if (ce != null && ce.optJSONObject("continuationCommand") != null) {
+            next = ce.optJSONObject("continuationCommand").optString("token", "");
+        }
+        return new JSONObject().put("items", ids).put("next", next).put("vd", vd).put("cv", cv);
     }
 
     /** 검색어 추천(입력하는 동안). 가벼운 요청 하나 */
