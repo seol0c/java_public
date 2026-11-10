@@ -1,0 +1,106 @@
+# seoltube 엔진 자동 빌드
+# 매일 NewPipe Extractor 새 버전을 확인하고, 새로 나왔으면 엔진(APK 꼴의 dex 묶음)을 만들어 서명해 올린다.
+# 폰의 seoltube 는 seoltube/engine/latest.json 을 보고 새 엔진을 받아 갈아 끼운다.
+# 이 파일은 seoltube/ 폴더만 건드린다.
+name: seoltube-engine
+
+on:
+  schedule:
+    - cron: '17 20 * * *'   # 매일 한국 시각 05:17
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '같은 NewPipe 버전이어도 다시 만들기'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency: seoltube-engine
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APK: seoltube/engine/engine/build/outputs/apk/release/engine-release-unsigned.apk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: NewPipe 새 버전 확인
+        id: v
+        run: |
+          latest=$(gh api repos/TeamNewPipe/NewPipeExtractor/releases/latest --jq .tag_name)
+          cur=""
+          if [ -f seoltube/engine/latest.json ]; then cur=$(jq -r '.newpipe' seoltube/engine/latest.json); fi
+          echo "NewPipe 최신 $latest, 지금 엔진 ${cur:-없음}"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          if [ "$latest" = "$cur" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "새 버전 없음, 끝"
+          fi
+
+      - if: steps.v.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - if: steps.v.outputs.skip != 'true'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 엔진 빌드
+        if: steps.v.outputs.skip != 'true'
+        run: gradle -p seoltube/engine :engine:assembleRelease -PnewpipeVersion=${{ steps.v.outputs.latest }} --console=plain
+
+      - name: 엔진 확인 (필요한 클래스가 실렸는지)
+        if: steps.v.outputs.skip != 'true'
+        run: |
+          mkdir chk && (cd chk && unzip -q "../$APK" 'classes*.dex')
+          DD="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)dexdump"
+          for f in chk/classes*.dex; do "$DD" "$f" | grep "Class descriptor"; done > chk/cls.txt
+          for c in 'Lcom/seolpc/seoltube/engine/Engine;' 'Lorg/schabi/newpipe/extractor/NewPipe;' 'Lorg/mozilla/javascript/Context;'; do
+            grep -qF "$c" chk/cls.txt || { echo "없음: $c"; exit 1; }
+          done
+          echo "클래스 $(wc -l < chk/cls.txt)개, 확인 끝"
+
+      - name: 서명하고 올리기
+        if: steps.v.outputs.skip != 'true'
+        env:
+          KEY: ${{ secrets.SEOLTUBE_ENGINE_KEY }}
+        run: |
+          n=${{ github.run_number }}
+          np=${{ steps.v.outputs.latest }}
+          api=$(grep -oP 'API = \K[0-9]+' seoltube/engine/engine/src/main/java/com/seolpc/seoltube/engine/Engine.java)
+          tag="seoltube-engine-$n"
+          out="seoltube-engine-$n.apk"
+          cp "$APK" "$out"
+          umask 077; printf '%s\n' "$KEY" > key.pem
+          openssl dgst -sha256 -sign key.pem -out sig.bin "$out"
+          rm -f key.pem
+          sig=$(base64 -w0 sig.bin)
+          sha=$(sha256sum "$out" | cut -d' ' -f1)
+          size=$(stat -c%s "$out")
+          gh release create "$tag" "$out" --title "seoltube 엔진 $n (NewPipe $np)" \
+            --notes "seoltube 앱이 받아 쓰는 엔진입니다. NewPipe Extractor $np (GPL-3.0) 를 묶은 것입니다."
+          jq -n --argjson engine "$n" --argjson api "$api" --arg newpipe "$np" \
+             --arg url "https://github.com/${{ github.repository }}/releases/download/$tag/$out" \
+             --arg sha256 "$sha" --argjson size "$size" --arg sig "$sig" --arg built "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             '{engine:$engine, api:$api, newpipe:$newpipe, url:$url, sha256:$sha256, size:$size, sig:$sig, built:$built}' \
+             > seoltube/engine/latest.json
+          cat seoltube/engine/latest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add seoltube/engine/latest.json
+          git commit -m "seoltube 엔진 $n (NewPipe $np)"
+          git push
+
+      - name: 옛 엔진 정리 (최근 5개만 남김)
+        if: steps.v.outputs.skip != 'true'
+        run: |
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("seoltube-engine-"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+          while read -r t; do gh release delete "$t" --yes --cleanup-tag; done
