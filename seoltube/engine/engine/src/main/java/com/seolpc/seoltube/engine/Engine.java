@@ -24,7 +24,7 @@ import java.util.List;
  * 앱은 이 클래스를 이름으로 불러 call(요청 JSON) 만 부른다. 앱과 엔진 사이에 같은 클래스를 나눠 갖지 않으므로
  * NewPipe 가 안쪽을 바꿔도 앱은 다시 깔 필요가 없다.
  *
- * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..}
+ * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..}
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -54,6 +54,7 @@ public final class Engine {
                 case "streams": r = streams(q.getString("id")); break;
                 case "search": r = search(q.getString("q")); break;
                 case "related": r = related(q.getString("id")); break;
+                case "suggest": r = suggest(q.getString("q")); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -142,6 +143,12 @@ public final class Engine {
         final SearchInfo info = SearchInfo.getInfo(yt(),
                 yt().getSearchQHFactory().fromQuery(query, Collections.singletonList("videos"), ""));
         return new JSONObject().put("items", items(info.getRelatedItems()));
+    }
+
+    /** 검색어 추천(입력하는 동안). 가벼운 요청 하나 */
+    private static JSONObject suggest(final String query) throws Exception {
+        final List<String> l = yt().getSuggestionExtractor().suggestionList(query);
+        return new JSONObject().put("items", new JSONArray(l == null ? Collections.emptyList() : l));
     }
 
     private static JSONObject related(final String id) throws Exception {
