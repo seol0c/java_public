@@ -26,6 +26,7 @@ import java.util.List;
  *
  * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..}
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
+ * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
 public final class Engine {
     /** 앱과 약속한 문의 판. 요청/응답 모양을 바꾸면 올린다. */
@@ -118,16 +119,21 @@ public final class Engine {
         for (VideoStream v : info.getVideoStreams()) {
             if (!v.isUrl()) continue;
             mx.put(new JSONObject().put("url", v.getContent()).put("h", v.getHeight())
-                    .put("mime", v.getFormat() == null ? "" : v.getFormat().getMimeType()));
+                    .put("mime", v.getFormat() == null ? "" : v.getFormat().getMimeType())
+                    .put("progressive", v.getDeliveryMethod() == DeliveryMethod.PROGRESSIVE_HTTP));
         }
         final JSONArray au = new JSONArray();
         for (AudioStream a : info.getAudioStreams()) {
             if (!a.isUrl()) continue;
             au.put(new JSONObject().put("url", a.getContent()).put("kbps", a.getAverageBitrate())
                     .put("mime", a.getFormat() == null ? "" : a.getFormat().getMimeType())
-                    .put("track", a.getAudioTrackType() == null ? "" : a.getAudioTrackType().name()));
+                    .put("codec", a.getCodec() == null ? "" : a.getCodec())
+                    .put("track", a.getAudioTrackType() == null ? "" : a.getAudioTrackType().name())
+                    .put("progressive", a.getDeliveryMethod() == DeliveryMethod.PROGRESSIVE_HTTP));
         }
+        // 관련 영상도 같이(같은 정보로 한 번에. 따로 related 를 부르면 같은 영상을 두 번 읽는다)
         return r.put("videoOnly", vo).put("muxed", mx).put("audio", au)
+                .put("related", items(info.getRelatedItems()))
                 .put("dash", info.getDashMpdUrl() == null ? "" : info.getDashMpdUrl())
                 .put("hls", info.getHlsUrl() == null ? "" : info.getHlsUrl());
     }
