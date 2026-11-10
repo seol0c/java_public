@@ -1,10 +1,10 @@
 {
-  "engine": 4,
+  "engine": 5,
   "api": 1,
   "newpipe": "v0.27.1",
-  "url": "https://github.com/seol0c/java_public/releases/download/seoltube-engine-4/seoltube-engine-4.apk",
-  "sha256": "9df5542751e58f3cf7c04a72e8cba78b1ac1851ed7e1e1453a370e0a856bf483",
-  "size": 3206003,
-  "sig": "MEUCIQC9XGkoDe983Ifq+EoXgxQe4ejfmcVvmBXHgJxUMjMZVwIgTD1G3VVDAjjqH4Y14i5aE81yXvZQKYucqOVLpTt5nRk=",
-  "built": "2026-11-10T11:53:05Z"
+  "url": "https://github.com/seol0c/java_public/releases/download/seoltube-engine-5/seoltube-engine-5.apk",
+  "sha256": "e38396b5d73918c8cdead9c17dd36b52df33924e3efbed4514c7eb4307711888",
+  "size": 3206243,
+  "sig": "MEUCIGdC+s7bMkY+CiuQYUtroNuVQ4gDe39L3RsfFXAOuQ+yAiEA5cSOV0Sl3jNBsKJbXLmcLyXr5zzZsYNPhhaiRGVgjFw=",
+  "built": "2026-11-10T11:54:39Z"
 }
