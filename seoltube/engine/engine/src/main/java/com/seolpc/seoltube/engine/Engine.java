@@ -24,7 +24,7 @@ import java.util.List;
  * 앱은 이 클래스를 이름으로 불러 call(요청 JSON) 만 부른다. 앱과 엔진 사이에 같은 클래스를 나눠 갖지 않으므로
  * NewPipe 가 안쪽을 바꿔도 앱은 다시 깔 필요가 없다.
  *
- * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?}
+ * 요청 {"m":"init","cache":폴더} {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?}
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -50,6 +50,7 @@ public final class Engine {
             final JSONObject r;
             switch (m) {
                 case "version": r = version(); break;
+                case "init": r = init(q); break;
                 case "audio": r = audio(q.getString("id")); break;
                 case "streams": r = streams(q.getString("id")); break;
                 case "search": r = search(q.getString("q")); break;
@@ -76,6 +77,13 @@ public final class Engine {
 
     private static String watchUrl(final String id) {
         return "https://www.youtube.com/watch?v=" + id;
+    }
+
+    /** 앱이 처음 부를 때: 캐시 폴더 알려 주기(재생 스크립트 캐시) */
+    private static JSONObject init(final JSONObject q) throws Exception {
+        final String dir = q.optString("cache", "");
+        if (!dir.isEmpty()) HttpDownloader.jsCacheDir = new java.io.File(dir);
+        return new JSONObject();
     }
 
     private static JSONObject version() throws Exception {

@@ -20,8 +20,50 @@ final class HttpDownloader extends Downloader {
     static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0";
 
+    /**
+     * 유튜브 재생 스크립트(…/s/player/<판>/…/base.js, 약 2MB) 캐시 폴더. 앱이 init 으로 알려 준다.
+     * 영상 주소를 풀려면 이 스크립트가 필요한데, 앱을 켤 때마다 다시 받으면 첫 재생이 느리다
+     * (형님 2026-11-11 "그냥 캐시로만, 누르면 그거에 집중"). 주소에 판 번호가 있어 판이 바뀌면 새로 받는다. 최신 둘만 남긴다.
+     */
+    static volatile java.io.File jsCacheDir;
+
+    private static java.io.File jsFile(final String url) {
+        final java.io.File d = jsCacheDir;
+        if (d == null || !url.contains("/s/player/") || !url.endsWith("base.js")) return null;
+        return new java.io.File(d, Integer.toHexString(url.hashCode()) + ".js");
+    }
+
     @Override
     public Response execute(final Request request) throws IOException, ReCaptchaException {
+        final String url = request.url();
+        final java.io.File jf = "GET".equals(request.httpMethod()) ? jsFile(url) : null;
+        if (jf != null && jf.isFile() && jf.length() > 0) {
+            try (java.io.InputStream in = new java.io.FileInputStream(jf)) {
+                return new Response(200, "OK (cache)", null, readAll(in), url);
+            }
+        }
+        final Response r = executeNet(request);
+        if (jf != null && r.responseCode() == 200 && r.responseBody().length() > 1000) {
+            try {
+                jf.getParentFile().mkdirs();
+                final java.io.File tmp = new java.io.File(jf.getPath() + ".tmp");
+                try (java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
+                    out.write(r.responseBody().getBytes(StandardCharsets.UTF_8));
+                }
+                tmp.renameTo(jf);
+                // 최신 둘만 남김
+                final java.io.File[] all = jf.getParentFile().listFiles((x, n) -> n.endsWith(".js"));
+                if (all != null && all.length > 2) {
+                    java.util.Arrays.sort(all, (x, y) -> Long.compare(y.lastModified(), x.lastModified()));
+                    for (int i = 2; i < all.length; i++) all[i].delete();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return r;
+    }
+
+    private Response executeNet(final Request request) throws IOException, ReCaptchaException {
         final String url = request.url();
         final HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         try {
