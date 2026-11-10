@@ -25,6 +25,7 @@ import java.util.List;
  * NewPipe 가 안쪽을 바꿔도 앱은 다시 깔 필요가 없다.
  *
  * 요청 {"m":"init","cache":폴더} {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?} {"m":"shortsSearch","q":..}
+ * {"m":"comments","id":..,"page"?:{..}} (page 는 앞 응답의 next 또는 댓글의 replies 를 그대로)
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -59,6 +60,7 @@ public final class Engine {
                 case "music": r = music(q.getString("q"), q.optInt("part", 0)); break;
                 case "shorts": r = shortsFeed(q); break;
                 case "shortsSearch": r = shortsSearch(q.getString("q")); break;
+                case "comments": r = comments(q); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -432,6 +434,95 @@ public final class Engine {
                     .put("thumb", bestThumb(s.getThumbnails())));
         }
         return a;
+    }
+
+    /**
+     * 댓글(영상, 쇼츠 같음). page 가 없으면 첫 쪽(인기순, 고정 댓글 먼저). 있으면 그 쪽(다음 쪽 또는 답글).
+     * 응답 {count, disabled, items:[{id,author,avatar,text,html,when,likes,likesText,replies,repliesPage?,pinned,hearted,owner,edited}], next?}
+     */
+    private static JSONObject comments(final JSONObject q) throws Exception {
+        final String url = watchUrl(q.getString("id"));
+        final JSONObject r = new JSONObject();
+        final List<org.schabi.newpipe.extractor.comments.CommentsInfoItem> list;
+        final org.schabi.newpipe.extractor.Page next;
+        final JSONObject pj = q.optJSONObject("page");
+        if (pj == null) {
+            final org.schabi.newpipe.extractor.comments.CommentsInfo info =
+                    org.schabi.newpipe.extractor.comments.CommentsInfo.getInfo(yt(), url);
+            r.put("count", info.getCommentsCount()).put("disabled", info.isCommentsDisabled());
+            list = info.getRelatedItems();
+            next = info.getNextPage();
+        } else {
+            final org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<org.schabi.newpipe.extractor.comments.CommentsInfoItem> pg =
+                    org.schabi.newpipe.extractor.comments.CommentsInfo.getMoreItems(yt(), url, pageOf(pj));
+            list = pg.getItems();
+            next = pg.getNextPage();
+        }
+        final JSONArray a = new JSONArray();
+        if (list != null) for (org.schabi.newpipe.extractor.comments.CommentsInfoItem c : list) {
+            final org.schabi.newpipe.extractor.stream.Description d = c.getCommentText();
+            final JSONObject o = new JSONObject()
+                    .put("id", c.getCommentId() == null ? "" : c.getCommentId())
+                    .put("author", c.getUploaderName() == null ? "" : c.getUploaderName())
+                    .put("avatar", smallThumb(c.getUploaderAvatars()))
+                    .put("text", d == null || d.content() == null ? "" : d.content())
+                    .put("html", d != null && d.type() == org.schabi.newpipe.extractor.stream.Description.Type.HTML)
+                    .put("when", c.getTextualUploadDate() == null ? "" : c.getTextualUploadDate())
+                    .put("likes", c.getLikeCount())
+                    .put("likesText", c.getTextualLikeCount() == null ? "" : c.getTextualLikeCount())
+                    .put("replies", c.getReplyCount())
+                    .put("pinned", c.isPinned())
+                    .put("hearted", c.isHeartedByUploader())
+                    .put("owner", c.isChannelOwner())
+                    .put("edited", c.isEdited());
+            if (org.schabi.newpipe.extractor.Page.isValid(c.getReplies())) o.put("repliesPage", pageJson(c.getReplies()));
+            a.put(o);
+        }
+        r.put("items", a);
+        if (org.schabi.newpipe.extractor.Page.isValid(next)) r.put("next", pageJson(next));
+        return r;
+    }
+
+    /** NewPipe 의 Page 를 JSON 으로(앱은 안을 모르고 그대로 돌려준다) */
+    private static JSONObject pageJson(final org.schabi.newpipe.extractor.Page p) throws Exception {
+        final JSONObject o = new JSONObject();
+        if (p.getUrl() != null) o.put("url", p.getUrl());
+        if (p.getId() != null) o.put("pid", p.getId());
+        if (p.getIds() != null) o.put("ids", new JSONArray(p.getIds()));
+        if (p.getCookies() != null) o.put("cookies", new JSONObject(p.getCookies()));
+        if (p.getBody() != null) o.put("body", java.util.Base64.getEncoder().encodeToString(p.getBody()));
+        return o;
+    }
+
+    private static org.schabi.newpipe.extractor.Page pageOf(final JSONObject o) throws Exception {
+        java.util.List<String> ids = null;
+        final JSONArray ia = o.optJSONArray("ids");
+        if (ia != null) {
+            ids = new java.util.ArrayList<>();
+            for (int i = 0; i < ia.length(); i++) ids.add(ia.getString(i));
+        }
+        java.util.Map<String, String> cookies = null;
+        final JSONObject co = o.optJSONObject("cookies");
+        if (co != null) {
+            cookies = new java.util.HashMap<>();
+            for (java.util.Iterator<String> it = co.keys(); it.hasNext(); ) {
+                final String k = it.next();
+                cookies.put(k, co.getString(k));
+            }
+        }
+        final byte[] body = o.has("body") ? java.util.Base64.getDecoder().decode(o.getString("body")) : null;
+        return new org.schabi.newpipe.extractor.Page(o.optString("url", null), o.optString("pid", null), ids, cookies, body);
+    }
+
+    /** 작은 그림(댓글 얼굴): 높이 48 이상 가운데 가장 작은 것 */
+    private static String smallThumb(final List<Image> imgs) {
+        if (imgs == null || imgs.isEmpty()) return "";
+        Image pick = null;
+        for (Image i : imgs) {
+            if (i.getHeight() >= 48 && (pick == null || i.getHeight() < pick.getHeight())) pick = i;
+        }
+        if (pick == null) pick = imgs.get(imgs.size() - 1);
+        return pick.getUrl();
     }
 
     private static String bestThumb(final List<Image> imgs) {
