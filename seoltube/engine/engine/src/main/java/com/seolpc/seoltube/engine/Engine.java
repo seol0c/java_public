@@ -279,6 +279,7 @@ public final class Engine {
 
     private static final java.util.regex.Pattern P_VID = java.util.regex.Pattern.compile("\"videoId\":\"([\\w-]{11})\"");
     private static final java.util.regex.Pattern P_SEQ = java.util.regex.Pattern.compile("\"sequenceContinuation\":\"([^\"]+)\"");
+    private static final java.util.regex.Pattern P_SP = java.util.regex.Pattern.compile("\"sequenceParams\":\"([^\"]+)\"");
     private static final java.util.regex.Pattern P_VD = java.util.regex.Pattern.compile("\"visitorData\":\"([^\"]+)\"");
     private static final java.util.regex.Pattern P_CV = java.util.regex.Pattern.compile("\"INNERTUBE_CLIENT_VERSION\":\"([^\"]+)\"");
 
@@ -296,10 +297,17 @@ public final class Engine {
             final String html = NewPipe.getDownloader().get(
                     "https://www.youtube.com/shorts/" + seed + "?hl=ko&gl=KR", h).responseBody();
             java.util.regex.Matcher m = P_VID.matcher(html);
-            if (m.find()) ids.put(m.group(1));
+            if (!seed.isEmpty()) ids.put(seed);          // 누른 쇼츠가 맨 앞
+            else if (m.find()) ids.put(m.group(1));
+            // 무작위 출발은 sequenceContinuation, 쇼츠 하나에서 출발하면 sequenceParams(그 쇼츠와 비슷한 것들)
             m = P_SEQ.matcher(html);
-            if (!m.find()) throw new IllegalStateException("쇼츠 피드를 찾지 못했습니다");
-            token = m.group(1);
+            if (m.find()) {
+                token = m.group(1);
+            } else {
+                final java.util.regex.Matcher m2 = P_SP.matcher(html);
+                if (!m2.find()) throw new IllegalStateException("쇼츠 피드를 찾지 못했습니다");
+                token = m2.group(1);
+            }
             m = P_VD.matcher(html);
             if (m.find()) vd = m.group(1);
             m = P_CV.matcher(html);
