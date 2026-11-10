@@ -158,8 +158,10 @@ public final class Engine {
      */
     private static JSONObject music(final String query, final int part) throws Exception {
         if (part == 1 || part == 2) {
+            // 형님 2026-11-10: "라이브, 가사 영상도 나와도 되는데 순위가 낮아서 아래에. 아예 거르라는 게 아니라 음원을 다 띄우고 그다음 아래에"
+            // → 거르지 않고 모두 돌려주되 공식 음원이면 official=true. 앱이 공식 음원을 먼저, 나머지를 아래에 놓는다
             final java.util.LinkedHashMap<String, JSONObject> out = new java.util.LinkedHashMap<>();
-            addSongs(videoSearch(part == 1 ? query : query + " auto-generated"), out);
+            addAll(videoSearch(part == 1 ? query : query + " auto-generated"), out);
             return new JSONObject().put("items", new JSONArray(out.values()));
         }
         return music(query);
@@ -208,6 +210,33 @@ public final class Engine {
     private static List<InfoItem> videoSearch(final String q) throws Exception {
         return SearchInfo.getInfo(yt(),
                 yt().getSearchQHFactory().fromQuery(q, Collections.singletonList("videos"), "")).getRelatedItems();
+    }
+
+    /** 검색 결과 모두(쇼츠는 뺌), 공식 음원 표시(official) 붙여서 */
+    private static void addAll(final List<InfoItem> list, final java.util.Map<String, JSONObject> out) throws Exception {
+        for (InfoItem it : list) {
+            if (!(it instanceof StreamInfoItem)) continue;
+            final StreamInfoItem s = (StreamInfoItem) it;
+            if (s.isShortFormContent()) continue;
+            final String id;
+            try {
+                id = yt().getStreamLHFactory().getId(s.getUrl());
+            } catch (Exception e) {
+                continue;
+            }
+            if (out.containsKey(id)) continue;
+            final boolean official = isOfficialAudio(s);
+            String up = s.getUploaderName() == null ? "" : s.getUploaderName();
+            if (up.endsWith(" - Topic")) up = up.substring(0, up.length() - 8);
+            out.put(id, new JSONObject()
+                    .put("id", id)
+                    .put("title", s.getName())
+                    .put("uploader", up)
+                    .put("duration", s.getDuration())
+                    .put("views", s.getViewCount())
+                    .put("official", official)
+                    .put("thumb", bestThumb(s.getThumbnails())));
+        }
     }
 
     private static void addSongs(final List<InfoItem> list, final java.util.Map<String, JSONObject> out) throws Exception {
