@@ -23,7 +23,7 @@ final class HttpDownloader extends Downloader {
     /**
      * 유튜브 재생 스크립트(…/s/player/<판>/…/base.js, 약 2MB) 캐시 폴더. 앱이 init 으로 알려 준다.
      * 영상 주소를 풀려면 이 스크립트가 필요한데, 앱을 켤 때마다 다시 받으면 첫 재생이 느리다
-     * (형님 2026-11-11 "그냥 캐시로만, 누르면 그거에 집중"). 주소에 판 번호가 있어 판이 바뀌면 새로 받는다. 최신 둘만 남긴다.
+     * (형님 2026-11-11 "그냥 캐시로만, 누르면 그거에 집중"). 주소에 판 번호가 있어 판이 바뀌면 새로 받는다. 최신 하나만 남긴다.
      */
     static volatile java.io.File jsCacheDir;
 
@@ -51,12 +51,9 @@ final class HttpDownloader extends Downloader {
                     out.write(r.responseBody().getBytes(StandardCharsets.UTF_8));
                 }
                 tmp.renameTo(jf);
-                // 최신 둘만 남김
+                // 최신 하나만 남김(방금 받은 것 말고는 지움)
                 final java.io.File[] all = jf.getParentFile().listFiles((x, n) -> n.endsWith(".js"));
-                if (all != null && all.length > 2) {
-                    java.util.Arrays.sort(all, (x, y) -> Long.compare(y.lastModified(), x.lastModified()));
-                    for (int i = 2; i < all.length; i++) all[i].delete();
-                }
+                if (all != null) for (java.io.File f : all) if (!f.getName().equals(jf.getName())) f.delete();
             } catch (Exception ignored) {
             }
         }
