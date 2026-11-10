@@ -147,7 +147,7 @@ public final class Engine {
     }
 
     /**
-     * 음악 검색: 일반 유튜브 검색에서 음반사가 올린 공식 음원(설명이 "Provided to YouTube by" 로 시작)만 고른다.
+     * 음악 검색: 일반 유튜브 검색에서 공식 음원만 고른다(isOfficialAudio).
      * 한국은 로그인 없이 유튜브 뮤직의 '노래' 검색이 막혀 있어서 이렇게 한다(2026-11-10 확인).
      * 두 검색을 동시에: ① 검색어 그대로(영상만, 인기순에 가까움) ② 검색어 + " auto-generated"(음원이 많이 나옴).
      * ①을 앞에, ②를 뒤에, 같은 영상은 한 번만.
@@ -180,6 +180,18 @@ public final class Engine {
         return new JSONObject().put("items", new JSONArray(out.values()));
     }
 
+    /**
+     * 음악 탭에 넣을 것(형님 2026-11-10 "딱 봐도 공식 음원, 영상 없는 앨범 재킷만 있는 음원, 또는 official audio 같은 것들만"):
+     * ① 음반사가 올린 공식 음원(설명이 "Provided to YouTube by" 로 시작, 앨범 재킷만 나오는 것)
+     * ② 제목에 Official Audio, (Audio), [Audio] 가 붙은 것
+     */
+    private static boolean isOfficialAudio(final StreamInfoItem s) throws Exception {
+        final String d = s.getShortDescription();
+        if (d != null && d.startsWith("Provided to YouTube by")) return true;
+        final String t = s.getName() == null ? "" : s.getName().toLowerCase(java.util.Locale.ROOT);
+        return t.contains("official audio") || t.contains("(audio)") || t.contains("[audio]");
+    }
+
     private static List<InfoItem> videoSearch(final String q) throws Exception {
         return SearchInfo.getInfo(yt(),
                 yt().getSearchQHFactory().fromQuery(q, Collections.singletonList("videos"), "")).getRelatedItems();
@@ -189,8 +201,7 @@ public final class Engine {
         for (InfoItem it : list) {
             if (!(it instanceof StreamInfoItem)) continue;
             final StreamInfoItem s = (StreamInfoItem) it;
-            final String d = s.getShortDescription();
-            if (d == null || !d.startsWith("Provided to YouTube by")) continue;
+            if (!isOfficialAudio(s)) continue;
             final String id;
             try {
                 id = yt().getStreamLHFactory().getId(s.getUrl());
