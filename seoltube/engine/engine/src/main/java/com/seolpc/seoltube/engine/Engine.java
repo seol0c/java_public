@@ -24,7 +24,7 @@ import java.util.List;
  * 앱은 이 클래스를 이름으로 불러 call(요청 JSON) 만 부른다. 앱과 엔진 사이에 같은 클래스를 나눠 갖지 않으므로
  * NewPipe 가 안쪽을 바꿔도 앱은 다시 깔 필요가 없다.
  *
- * 요청 {"m":"init","cache":폴더} {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?}
+ * 요청 {"m":"init","cache":폴더} {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?} {"m":"shortsSearch","q":..}
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -58,6 +58,7 @@ public final class Engine {
                 case "suggest": r = suggest(q.getString("q")); break;
                 case "music": r = music(q.getString("q"), q.optInt("part", 0)); break;
                 case "shorts": r = shortsFeed(q); break;
+                case "shortsSearch": r = shortsSearch(q.getString("q")); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -340,6 +341,52 @@ public final class Engine {
             next = ce.optJSONObject("continuationCommand").optString("token", "");
         }
         return new JSONObject().put("items", ids).put("next", next).put("vd", vd).put("cv", cv);
+    }
+
+    /**
+     * 쇼츠 검색(형님 2026-11-11 "쇼츠도 검색해서 보게"): 유튜브 웹 검색의 Shorts 걸러보기(params EgIQCQ==) 결과에서
+     * shortsLockupViewModel 을 읽는다(NewPipe 는 이 모양을 읽지 못해 직접). 항목 {id, title, sub(조회수 등)}
+     */
+    private static JSONObject shortsSearch(final String query) throws Exception {
+        final JSONObject client = new JSONObject().put("clientName", "WEB").put("clientVersion", "2.20261106.00.00")
+                .put("hl", "ko").put("gl", "KR");
+        final JSONObject body = new JSONObject().put("context", new JSONObject().put("client", client))
+                .put("query", query).put("params", "EgIQCQ==");
+        final java.util.Map<String, List<String>> h = new java.util.HashMap<>();
+        h.put("Content-Type", Collections.singletonList("application/json"));
+        h.put("Origin", Collections.singletonList("https://www.youtube.com"));
+        final String res = NewPipe.getDownloader().post(
+                "https://www.youtube.com/youtubei/v1/search?prettyPrint=false", h,
+                body.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)).responseBody();
+        final List<JSONObject> found = new java.util.ArrayList<>();
+        collect(new JSONObject(res), "shortsLockupViewModel", found);
+        final JSONArray out = new JSONArray();
+        final java.util.Set<String> seen = new java.util.HashSet<>();
+        for (JSONObject x : found) {
+            final JSONObject on = x.optJSONObject("onTap");
+            final JSONObject cmd = on == null ? null : on.optJSONObject("innertubeCommand");
+            final JSONObject ep = cmd == null ? null : cmd.optJSONObject("reelWatchEndpoint");
+            final String id = ep == null ? "" : ep.optString("videoId", "");
+            if (id.isEmpty() || !seen.add(id)) continue;
+            final JSONObject om = x.optJSONObject("overlayMetadata");
+            final String title = om == null || om.optJSONObject("primaryText") == null ? "" : om.optJSONObject("primaryText").optString("content", "");
+            final String sub = om == null || om.optJSONObject("secondaryText") == null ? "" : om.optJSONObject("secondaryText").optString("content", "");
+            out.put(new JSONObject().put("id", id).put("title", title).put("sub", sub));
+        }
+        return new JSONObject().put("items", out);
+    }
+
+    private static void collect(final Object o, final String key, final List<JSONObject> out) {
+        if (o instanceof JSONObject) {
+            final JSONObject j = (JSONObject) o;
+            final JSONObject hit = j.optJSONObject(key);
+            if (hit != null) out.add(hit);
+            final java.util.Iterator<String> it = j.keys();
+            while (it.hasNext()) collect(j.opt(it.next()), key, out);
+        } else if (o instanceof JSONArray) {
+            final JSONArray a = (JSONArray) o;
+            for (int i = 0; i < a.length(); i++) collect(a.opt(i), key, out);
+        }
     }
 
     /** 검색어 추천(입력하는 동안). 가벼운 요청 하나 */
