@@ -24,7 +24,7 @@ import java.util.List;
  * 앱은 이 클래스를 이름으로 불러 call(요청 JSON) 만 부른다. 앱과 엔진 사이에 같은 클래스를 나눠 갖지 않으므로
  * NewPipe 가 안쪽을 바꿔도 앱은 다시 깔 필요가 없다.
  *
- * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..}
+ * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..}
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -55,6 +55,7 @@ public final class Engine {
                 case "search": r = search(q.getString("q")); break;
                 case "related": r = related(q.getString("id")); break;
                 case "suggest": r = suggest(q.getString("q")); break;
+                case "music": r = music(q.getString("q")); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -143,6 +144,70 @@ public final class Engine {
         final SearchInfo info = SearchInfo.getInfo(yt(),
                 yt().getSearchQHFactory().fromQuery(query, Collections.singletonList("videos"), ""));
         return new JSONObject().put("items", items(info.getRelatedItems()));
+    }
+
+    /**
+     * 음악 검색: 일반 유튜브 검색에서 음반사가 올린 공식 음원(설명이 "Provided to YouTube by" 로 시작)만 고른다.
+     * 한국은 로그인 없이 유튜브 뮤직의 '노래' 검색이 막혀 있어서 이렇게 한다(2026-11-10 확인).
+     * 두 검색을 동시에: ① 검색어 그대로(영상만, 인기순에 가까움) ② 검색어 + " auto-generated"(음원이 많이 나옴).
+     * ①을 앞에, ②를 뒤에, 같은 영상은 한 번만.
+     */
+    private static JSONObject music(final String query) throws Exception {
+        final Object[] second = new Object[1];
+        final Thread t = new Thread(() -> {
+            try {
+                second[0] = videoSearch(query + " auto-generated");
+            } catch (Throwable e) {
+                second[0] = e;
+            }
+        }, "music-search-2");
+        t.start();
+        List<InfoItem> first = null;
+        Exception firstErr = null;
+        try {
+            first = videoSearch(query);
+        } catch (Exception e) {
+            firstErr = e;
+        }
+        t.join(20000);
+        final java.util.LinkedHashMap<String, JSONObject> out = new java.util.LinkedHashMap<>();
+        if (first != null) addSongs(first, out);
+        if (second[0] instanceof List) {
+            @SuppressWarnings("unchecked") final List<InfoItem> l = (List<InfoItem>) second[0];
+            addSongs(l, out);
+        }
+        if (out.isEmpty() && firstErr != null) throw firstErr;
+        return new JSONObject().put("items", new JSONArray(out.values()));
+    }
+
+    private static List<InfoItem> videoSearch(final String q) throws Exception {
+        return SearchInfo.getInfo(yt(),
+                yt().getSearchQHFactory().fromQuery(q, Collections.singletonList("videos"), "")).getRelatedItems();
+    }
+
+    private static void addSongs(final List<InfoItem> list, final java.util.Map<String, JSONObject> out) throws Exception {
+        for (InfoItem it : list) {
+            if (!(it instanceof StreamInfoItem)) continue;
+            final StreamInfoItem s = (StreamInfoItem) it;
+            final String d = s.getShortDescription();
+            if (d == null || !d.startsWith("Provided to YouTube by")) continue;
+            final String id;
+            try {
+                id = yt().getStreamLHFactory().getId(s.getUrl());
+            } catch (Exception e) {
+                continue;
+            }
+            if (out.containsKey(id)) continue;
+            String up = s.getUploaderName() == null ? "" : s.getUploaderName();
+            if (up.endsWith(" - Topic")) up = up.substring(0, up.length() - 8);
+            out.put(id, new JSONObject()
+                    .put("id", id)
+                    .put("title", s.getName())
+                    .put("uploader", up)
+                    .put("duration", s.getDuration())
+                    .put("views", s.getViewCount())
+                    .put("thumb", bestThumb(s.getThumbnails())));
+        }
     }
 
     /** 검색어 추천(입력하는 동안). 가벼운 요청 하나 */
