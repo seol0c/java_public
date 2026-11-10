@@ -24,7 +24,7 @@ import java.util.List;
  * 앱은 이 클래스를 이름으로 불러 call(요청 JSON) 만 부른다. 앱과 엔진 사이에 같은 클래스를 나눠 갖지 않으므로
  * NewPipe 가 안쪽을 바꿔도 앱은 다시 깔 필요가 없다.
  *
- * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..}
+ * 요청 {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2}
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -55,7 +55,7 @@ public final class Engine {
                 case "search": r = search(q.getString("q")); break;
                 case "related": r = related(q.getString("id")); break;
                 case "suggest": r = suggest(q.getString("q")); break;
-                case "music": r = music(q.getString("q")); break;
+                case "music": r = music(q.getString("q"), q.optInt("part", 0)); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -152,6 +152,19 @@ public final class Engine {
      * 두 검색을 동시에: ① 검색어 그대로(영상만, 인기순에 가까움) ② 검색어 + " auto-generated"(음원이 많이 나옴).
      * ①을 앞에, ②를 뒤에, 같은 영상은 한 번만.
      */
+    /**
+     * part: 0 = 둘 다(합쳐서), 1 = 검색어 그대로만, 2 = 검색어 + " auto-generated" 만.
+     * 앱은 1 과 2 를 따로 동시에 불러 먼저 온 것부터 보여 준다(형님 2026-11-10 "음악 검색이 검색 중에서 너무 오래 걸린다").
+     */
+    private static JSONObject music(final String query, final int part) throws Exception {
+        if (part == 1 || part == 2) {
+            final java.util.LinkedHashMap<String, JSONObject> out = new java.util.LinkedHashMap<>();
+            addSongs(videoSearch(part == 1 ? query : query + " auto-generated"), out);
+            return new JSONObject().put("items", new JSONArray(out.values()));
+        }
+        return music(query);
+    }
+
     private static JSONObject music(final String query) throws Exception {
         final Object[] second = new Object[1];
         final Thread t = new Thread(() -> {
