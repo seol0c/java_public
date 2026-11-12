@@ -435,7 +435,7 @@ public final class Engine {
                 desc = info.getDescription().content();
                 if (info.getDescription().type() == org.schabi.newpipe.extractor.stream.Description.Type.HTML) {
                     desc = desc.replaceAll("(?i)<br\\s*/?>", "\n").replaceAll("<[^>]+>", "");
-                    desc = org.jsoup.parser.Parser.unescapeEntities(desc, false);
+                    desc = unescape(desc);
                 }
             }
         } catch (Exception ignored) {
@@ -446,6 +446,30 @@ public final class Engine {
                 .put("desc", desc)
                 .put("channel", info.getUploaderUrl() == null ? "" : info.getUploaderUrl())
                 .put("avatar", bestThumb(info.getUploaderAvatars()));
+    }
+
+    /** &amp; &lt; &#39; &#x27; 같은 것을 글자로(jsoup 은 엔진에서 직접 못 씀) */
+    private static String unescape(final String s) {
+        final java.util.regex.Matcher m = java.util.regex.Pattern.compile("&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);").matcher(s);
+        final StringBuffer b = new StringBuffer();
+        while (m.find()) {
+            final String e = m.group(1);
+            String r = null;
+            try {
+                if (e.startsWith("#x") || e.startsWith("#X")) r = new String(Character.toChars(Integer.parseInt(e.substring(2), 16)));
+                else if (e.startsWith("#")) r = new String(Character.toChars(Integer.parseInt(e.substring(1))));
+                else if (e.equals("amp")) r = "&";
+                else if (e.equals("lt")) r = "<";
+                else if (e.equals("gt")) r = ">";
+                else if (e.equals("quot")) r = "\"";
+                else if (e.equals("apos")) r = "'";
+                else if (e.equals("nbsp")) r = " ";
+            } catch (Exception ignored) {
+            }
+            m.appendReplacement(b, java.util.regex.Matcher.quoteReplacement(r == null ? m.group() : r));
+        }
+        m.appendTail(b);
+        return b.toString();
     }
 
     private static JSONArray items(final List<? extends InfoItem> list) throws Exception {
