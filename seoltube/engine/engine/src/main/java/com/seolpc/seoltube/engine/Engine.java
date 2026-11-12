@@ -152,6 +152,7 @@ public final class Engine {
         final String lt = localTitle(ex);
         if (!lt.isEmpty()) r.put("title", lt);
         details(info, r);
+        frames(info, r);
         final JSONArray vo = new JSONArray();
         for (VideoStream v : info.getVideoOnlyStreams()) {
             if (!v.isUrl()) continue;
@@ -444,6 +445,29 @@ public final class Engine {
                 .put("duration", info.getDuration())
                 .put("views", info.getViewCount())
                 .put("thumb", bestThumb(info.getThumbnails()));
+    }
+
+    /**
+     * 미리 보기 그림(스토리보드, 형님 2026-11-13 "화면을 끌어 앞뒤 이동이 어색하다"). 유튜브가 영상마다 만들어 둔 작은 장면 그림
+     * 묶음(한 장에 가로 x 세로 칸). 끄는 동안 이 그림을 보여 주고 놓을 때만 옮긴다(유튜브 앱처럼). 폭 160 쯤의 것을 고른다.
+     * frames: {urls:[장 주소...], w, h(한 칸 크기), cols, rows(한 장의 칸), count(모두), ms(한 칸의 길이)}. 없으면 넣지 않는다.
+     */
+    private static void frames(final StreamInfo info, final JSONObject r) {
+        try {
+            final List<org.schabi.newpipe.extractor.stream.Frameset> fs = info.getPreviewFrames();
+            if (fs == null || fs.isEmpty()) return;
+            org.schabi.newpipe.extractor.stream.Frameset best = null;
+            for (org.schabi.newpipe.extractor.stream.Frameset f : fs) {
+                if (f.getUrls() == null || f.getUrls().isEmpty() || f.getDurationPerFrame() <= 0) continue;
+                if (best == null || Math.abs(f.getFrameWidth() - 160) < Math.abs(best.getFrameWidth() - 160)) best = f;
+            }
+            if (best == null) return;
+            r.put("frames", new JSONObject().put("urls", new JSONArray(best.getUrls()))
+                    .put("w", best.getFrameWidth()).put("h", best.getFrameHeight())
+                    .put("cols", best.getFramesPerPageX()).put("rows", best.getFramesPerPageY())
+                    .put("count", best.getTotalCount()).put("ms", best.getDurationPerFrame()));
+        } catch (Exception ignored) {
+        }
     }
 
     /**
