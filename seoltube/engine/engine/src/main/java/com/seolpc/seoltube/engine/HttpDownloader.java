@@ -27,6 +27,9 @@ final class HttpDownloader extends Downloader {
      */
     static volatile java.io.File jsCacheDir;
 
+    /** 이 스레드의 다음 응답에서 reloadContinuationItemsCommand 를 appendContinuationItemsAction 으로(채널 인기순 첫 쪽, Engine.popular) */
+    static final ThreadLocal<Boolean> RELOAD_AS_APPEND = new ThreadLocal<>();
+
     private static java.io.File jsFile(final String url) {
         final java.io.File d = jsCacheDir;
         if (d == null || !url.contains("/s/player/") || !url.endsWith("base.js")) return null;
@@ -98,10 +101,43 @@ final class HttpDownloader extends Downloader {
                 InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
                 if (in != null) body = readAll(in);
             }
+            if (Boolean.TRUE.equals(RELOAD_AS_APPEND.get()) && body.contains("reloadContinuationItemsCommand")) body = reloadAsAppend(body);
             return new Response(code, c.getResponseMessage(), c.getHeaderFields(), body,
                     c.getURL().toString());
         } finally {
             c.disconnect();
+        }
+    }
+
+    /**
+     * 칩을 누른 응답(reloadContinuationItemsCommand 가 둘: 칩 줄, 목록)에서 목록 쪽만 appendContinuationItemsAction 으로.
+     * NewPipe 는 첫 append 만 읽으므로 칩 줄은 뺀다. 못 고치면 그대로.
+     */
+    private static String reloadAsAppend(final String body) {
+        try {
+            final org.json.JSONObject j = new org.json.JSONObject(body);
+            final org.json.JSONArray acts = j.optJSONArray("onResponseReceivedActions");
+            if (acts == null) return body;
+            final org.json.JSONArray out = new org.json.JSONArray();
+            for (int i = 0; i < acts.length(); i++) {
+                final org.json.JSONObject a = acts.optJSONObject(i);
+                if (a == null) continue;
+                final org.json.JSONObject rc = a.optJSONObject("reloadContinuationItemsCommand");
+                if (rc == null) {
+                    out.put(a);
+                    continue;
+                }
+                final org.json.JSONArray items = rc.optJSONArray("continuationItems");
+                if (items == null) continue;
+                final String s = items.toString();
+                if (!s.contains("richItemRenderer") && !s.contains("continuationItemRenderer")) continue;   // 칩 줄
+                out.put(new org.json.JSONObject().put("appendContinuationItemsAction",
+                        new org.json.JSONObject().put("continuationItems", items)));
+            }
+            j.put("onResponseReceivedActions", out);
+            return j.toString();
+        } catch (Exception e) {
+            return body;
         }
     }
 

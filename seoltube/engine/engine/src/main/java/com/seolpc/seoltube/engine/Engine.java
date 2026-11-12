@@ -27,7 +27,8 @@ import java.util.List;
  * 요청 {"m":"init","cache":폴더} {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?} {"m":"shortsSearch","q":..}
  * {"m":"comments","id":..,"page"?:{..}} (page 는 앞 응답의 next 또는 댓글의 replies 를 그대로)
  * {"m":"heatmap","id":..} 많이 본 구간
- * {"m":"channel","url":채널 주소,"tab":"videos"|"shorts","cid"?,"page"?} 채널(처음: 이름, 그림, 구독자 + 목록. 다음: cid 와 page 로 목록만)
+ * {"m":"channel","url":채널 주소,"tab":"videos"|"shorts","sort"?:"popular","cid"?,"page"?} 채널(처음: 이름, 그림, 구독자 + 목록. 다음: cid 와 page 로 목록만)
+ * {"m":"feed","channels":[채널 주소...]} 구독한 채널들의 새 영상(RSS)
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -65,6 +66,7 @@ public final class Engine {
                 case "comments": r = comments(q); break;
                 case "heatmap": r = heatmap(q.getString("id")); break;
                 case "channel": r = channel(q); break;
+                case "feed": r = feed(q); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -474,6 +476,15 @@ public final class Engine {
         return b.toString();
     }
 
+    /** 올린 때(ms). 모르면 0 */
+    private static long uploadMs(final StreamInfoItem s) {
+        try {
+            return s.getUploadDate() == null ? 0 : s.getUploadDate().offsetDateTime().toInstant().toEpochMilli();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     private static JSONArray items(final List<? extends InfoItem> list) throws Exception {
         final JSONArray a = new JSONArray();
         if (list == null) return a;
@@ -494,6 +505,7 @@ public final class Engine {
                     .put("views", s.getViewCount())
                     .put("shorts", s.isShortFormContent())
                     .put("when", s.getTextualUploadDate() == null ? "" : s.getTextualUploadDate())
+                    .put("time", uploadMs(s))
                     .put("channel", s.getUploaderUrl() == null ? "" : s.getUploaderUrl())
                     .put("thumb", bestThumb(s.getThumbnails())));
         }
@@ -579,6 +591,14 @@ public final class Engine {
             if (pick == null) return r.put("items", new JSONArray());
             final org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo ti =
                     org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getInfo(yt(), pick);
+            if ("popular".equals(q.optString("sort")) && org.schabi.newpipe.extractor.Page.isValid(ti.getNextPage())) {
+                final org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<InfoItem> pop = popular(pick, ti.getNextPage(), ci.getId(), tab);
+                if (pop != null) {
+                    r.put("items", items(pop.getItems())).put("sorted", "popular");
+                    if (org.schabi.newpipe.extractor.Page.isValid(pop.getNextPage())) r.put("next", pageJson(pop.getNextPage()));
+                    return r;
+                }
+            }
             r.put("items", items(ti.getRelatedItems()));
             if (org.schabi.newpipe.extractor.Page.isValid(ti.getNextPage())) r.put("next", pageJson(ti.getNextPage()));
             return r;
@@ -589,6 +609,127 @@ public final class Engine {
         r.put("items", items(pg.getItems()));
         if (org.schabi.newpipe.extractor.Page.isValid(pg.getNextPage())) r.put("next", pageJson(pg.getNextPage()));
         return r;
+    }
+
+    /**
+     * 채널 탭의 인기순 첫 쪽(형님 2026-11-12 "영상 인기순, 최신순으로", 쇼츠도). NewPipe 는 정렬을 모른다.
+     * 1. 탭 첫 화면(browse)에서 정렬 칩(최신순, 인기순, 날짜순 순서) 중 둘째의 continuation 을 찾는다.
+     * 2. NewPipe 가 만든 다음 쪽(Page)의 몸을 그대로 쓰되 continuation 만 그것으로 바꿔 NewPipe 에 넘긴다(목록 풀기는 NewPipe 그대로).
+     *    칩을 누른 응답은 reloadContinuationItemsCommand 라 NewPipe 가 못 읽으므로, 이 요청 하나만 HttpDownloader 가
+     *    appendContinuationItemsAction 으로 이름을 바꿔 준다. 그 뒤 쪽들은 보통 다음 쪽이라 그대로.
+     * 못 하면 null(앱은 최신순을 받는다).
+     */
+    private static org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<InfoItem> popular(
+            final org.schabi.newpipe.extractor.linkhandler.ListLinkHandler tabHandler,
+            final org.schabi.newpipe.extractor.Page next, final String cid, final String tab) {
+        try {
+            final JSONObject body = new JSONObject(new String(next.getBody(), java.nio.charset.StandardCharsets.UTF_8));
+            body.remove("continuation");
+            body.put("browseId", cid.startsWith("channel/") ? cid.substring(8) : cid)
+                    .put("params", org.schabi.newpipe.extractor.channel.tabs.ChannelTabs.SHORTS.equals(tab)
+                            ? "EgZzaG9ydHPyBgUKA5oBAA==" : "EgZ2aWRlb3PyBgQKAjoA");
+            final java.util.Map<String, List<String>> h = new java.util.HashMap<>();
+            h.put("Content-Type", Collections.singletonList("application/json"));
+            h.put("Origin", Collections.singletonList("https://www.youtube.com"));
+            final String res = NewPipe.getDownloader().post(next.getUrl(), h,
+                    body.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)).responseBody();
+            final String token = chipToken(new JSONObject(res), 1, 0);
+            if (token == null) return null;
+            final JSONObject b2 = new JSONObject(new String(next.getBody(), java.nio.charset.StandardCharsets.UTF_8)).put("continuation", token);
+            final org.schabi.newpipe.extractor.Page p = new org.schabi.newpipe.extractor.Page(next.getUrl(), next.getId(),
+                    next.getIds(), next.getCookies(), b2.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            HttpDownloader.RELOAD_AS_APPEND.set(Boolean.TRUE);
+            try {
+                return org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getMoreItems(yt(), tabHandler, p);
+            } finally {
+                HttpDownloader.RELOAD_AS_APPEND.remove();
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 정렬 칩 줄(chipBarViewModel 또는 옛 feedFilterChipBarRenderer)의 n 번째 칩의 continuation */
+    private static String chipToken(final Object o, final int n, final int depth) {
+        if (depth > 40) return null;
+        if (o instanceof JSONObject) {
+            final JSONObject j = (JSONObject) o;
+            final JSONObject bar = j.optJSONObject("chipBarViewModel");
+            if (bar != null) {
+                final JSONArray chips = bar.optJSONArray("chips");
+                if (chips != null && chips.length() > n) {
+                    final String t = tokenIn(chips.optJSONObject(n), 0);
+                    if (t != null) return t;
+                }
+            }
+            final JSONObject old = j.optJSONObject("feedFilterChipBarRenderer");
+            if (old != null) {
+                final JSONArray chips = old.optJSONArray("contents");
+                if (chips != null && chips.length() > n) {
+                    final String t = tokenIn(chips.optJSONObject(n), 0);
+                    if (t != null) return t;
+                }
+            }
+            for (java.util.Iterator<String> it = j.keys(); it.hasNext(); ) {
+                final String t = chipToken(j.opt(it.next()), n, depth + 1);
+                if (t != null) return t;
+            }
+        } else if (o instanceof JSONArray) {
+            final JSONArray a = (JSONArray) o;
+            for (int i = 0; i < a.length(); i++) {
+                final String t = chipToken(a.opt(i), n, depth + 1);
+                if (t != null) return t;
+            }
+        }
+        return null;
+    }
+
+    /** 칩 하나 안의 continuationCommand.token(어디에 있든 처음 것) */
+    private static String tokenIn(final Object o, final int depth) {
+        if (o == null || depth > 12) return null;
+        if (o instanceof JSONObject) {
+            final JSONObject j = (JSONObject) o;
+            final JSONObject cc = j.optJSONObject("continuationCommand");
+            if (cc != null && cc.optString("token", "").length() > 0) return cc.optString("token");
+            for (java.util.Iterator<String> it = j.keys(); it.hasNext(); ) {
+                final String t = tokenIn(j.opt(it.next()), depth + 1);
+                if (t != null) return t;
+            }
+        } else if (o instanceof JSONArray) {
+            final JSONArray a = (JSONArray) o;
+            for (int i = 0; i < a.length(); i++) {
+                final String t = tokenIn(a.opt(i), depth + 1);
+                if (t != null) return t;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 구독(앱 안, 형님 2026-11-12 "자체적으로 구독, 최신 나오면 보여 주고"). {"m":"feed","channels":[채널 주소...]}
+     * 채널마다 유튜브 RSS(가벼움, 최근 15개쯤)를 넷씩 함께 받아 하나로. 응답 {items:[..., time(올린 때 ms)], failed:n}
+     */
+    private static JSONObject feed(final JSONObject q) throws Exception {
+        final JSONArray ch = q.optJSONArray("channels");
+        final JSONArray out = new JSONArray();
+        if (ch == null || ch.length() == 0) return new JSONObject().put("items", out).put("failed", 0);
+        final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        final List<java.util.concurrent.Future<JSONArray>> fs = new java.util.ArrayList<>();
+        for (int i = 0; i < ch.length() && i < 300; i++) {
+            final String url = ch.optString(i);
+            fs.add(pool.submit(() -> items(org.schabi.newpipe.extractor.feed.FeedInfo.getInfo(yt(), url).getRelatedItems())));
+        }
+        int failed = 0;
+        for (java.util.concurrent.Future<JSONArray> f : fs) {
+            try {
+                final JSONArray a = f.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                for (int i = 0; i < a.length(); i++) out.put(a.get(i));
+            } catch (Exception e) {
+                failed++;
+            }
+        }
+        pool.shutdownNow();
+        return new JSONObject().put("items", out).put("failed", failed);
     }
 
     /** NewPipe 의 Page 를 JSON 으로(앱은 안을 모르고 그대로 돌려준다) */
