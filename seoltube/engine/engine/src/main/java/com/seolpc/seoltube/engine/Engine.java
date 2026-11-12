@@ -335,6 +335,9 @@ public final class Engine {
             final JSONObject cmd = entries.optJSONObject(i) == null ? null : entries.optJSONObject(i).optJSONObject("command");
             final JSONObject ep = cmd == null ? null : cmd.optJSONObject("reelWatchEndpoint");
             final String id = ep == null ? "" : ep.optString("videoId", "");
+            // 광고는 뺀다(형님 2026-11-12 "왜 자꾸 니베아 SOS 로션이 나오냐"): 로그인 없는 쇼츠 피드는 묶음마다 광고 한 칸을 끼우고,
+            // 그 칸의 reelWatchEndpoint 에는 adClientParams 가 있다(PC 확인: NIVEA Korea 쇼츠가 늘 세 번째 칸)
+            if (ep == null || ep.has("adClientParams") || entries.optJSONObject(i).toString().contains("\"adSlotRenderer\"")) continue;
             if (!id.isEmpty() && seen.add(id)) ids.put(id);
         }
         String next = "";
