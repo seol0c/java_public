@@ -26,6 +26,7 @@ import java.util.List;
  *
  * 요청 {"m":"init","cache":폴더} {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?} {"m":"shortsSearch","q":..}
  * {"m":"comments","id":..,"page"?:{..}} (page 는 앞 응답의 next 또는 댓글의 replies 를 그대로)
+ * {"m":"heatmap","id":..} 많이 본 구간
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -61,6 +62,7 @@ public final class Engine {
                 case "shorts": r = shortsFeed(q); break;
                 case "shortsSearch": r = shortsSearch(q.getString("q")); break;
                 case "comments": r = comments(q); break;
+                case "heatmap": r = heatmap(q.getString("id")); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -526,6 +528,48 @@ public final class Engine {
         }
         if (pick == null) pick = imgs.get(imgs.size() - 1);
         return pick.getUrl();
+    }
+
+    /**
+     * 많이 본 구간(유튜브의 "가장 많이 다시 본" 산 모양, 형님 2026-11-12 "많이 본 시점이 산처럼 올라가는 것").
+     * NewPipe 는 이것을 읽지 않아 직접: youtubei/v1/next 의 macroMarkersListEntity(MARKER_TYPE_HEATMAP) 의 markers.
+     * 응답 {items:[[시작ms, 길이ms, 세기0~1], ...]} (없으면 빈 배열). 조회수가 적은 영상은 원래 없다.
+     */
+    private static JSONObject heatmap(final String id) throws Exception {
+        final JSONObject client = new JSONObject().put("clientName", "WEB").put("clientVersion", "2.20261106.00.00")
+                .put("hl", "ko").put("gl", "KR");
+        final JSONObject body = new JSONObject().put("context", new JSONObject().put("client", client)).put("videoId", id);
+        final java.util.Map<String, List<String>> h = new java.util.HashMap<>();
+        h.put("Content-Type", Collections.singletonList("application/json"));
+        h.put("Origin", Collections.singletonList("https://www.youtube.com"));
+        final String res = NewPipe.getDownloader().post(
+                "https://www.youtube.com/youtubei/v1/next?prettyPrint=false", h,
+                body.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)).responseBody();
+        final JSONArray out = new JSONArray();
+        findHeat(new JSONObject(res), out, 0);
+        return new JSONObject().put("items", out);
+    }
+
+    /** 응답 어디에 있든 "세기" 가 든 markers 배열을 찾는다(처음 찾은 것 하나) */
+    private static void findHeat(final Object o, final JSONArray out, final int depth) throws Exception {
+        if (out.length() > 0 || depth > 40) return;
+        if (o instanceof JSONObject) {
+            final JSONObject j = (JSONObject) o;
+            final JSONArray m = j.optJSONArray("markers");
+            if (m != null && m.length() > 0 && m.optJSONObject(0) != null && m.optJSONObject(0).has("intensityScoreNormalized")) {
+                for (int i = 0; i < m.length(); i++) {
+                    final JSONObject k = m.optJSONObject(i);
+                    if (k == null) continue;
+                    out.put(new JSONArray().put(k.optLong("startMillis")).put(k.optLong("durationMillis"))
+                            .put(k.optDouble("intensityScoreNormalized", 0)));
+                }
+                return;
+            }
+            for (java.util.Iterator<String> it = j.keys(); it.hasNext(); ) findHeat(j.opt(it.next()), out, depth + 1);
+        } else if (o instanceof JSONArray) {
+            final JSONArray a = (JSONArray) o;
+            for (int i = 0; i < a.length(); i++) findHeat(a.opt(i), out, depth + 1);
+        }
     }
 
     private static String bestThumb(final List<Image> imgs) {
