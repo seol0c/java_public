@@ -80,6 +80,27 @@ public final class Engine {
         }
     }
 
+    /**
+     * 한국어로 묻기(형님 2026-11-13 "한국 영상인데 가끔 제목이 영어로 나온다"). NewPipe 의 YouTube 는 en-GB 만 받아 주므로
+     * (NewPipe.init 의 ko-KR 은 무시되고 en-GB 로 묻는다) 유튜브가 제목을 영어로 자동 번역해 보냈다. 묻는 것마다 ko-KR 로 못 박는다.
+     * NewPipe 는 한국어 "5시간 전" 은 잘 읽지만 줄인 수 "조회수 7.4만회" 는 74 로 읽어서, HttpDownloader 가 응답의 줄인 수를
+     * "조회수 74000회" 처럼 풀어 준다.
+     */
+    private static final Localization KO = new Localization("ko", "KR");
+    private static final ContentCountry KR = new ContentCountry("KR");
+
+    private static <T extends org.schabi.newpipe.extractor.Extractor> T ko(final T e) {
+        e.forceLocalization(KO);
+        e.forceContentCountry(KR);
+        return e;
+    }
+
+    /** ko 로 못 박고 바로 받아 둔다(SearchInfo, ChannelInfo, ChannelTabInfo 의 getInfo(extractor) 는 스스로 받지 않음) */
+    private static <T extends org.schabi.newpipe.extractor.Extractor> T koFetched(final T e) throws Exception {
+        ko(e).fetchPage();
+        return e;
+    }
+
     private static StreamingService yt() {
         return ServiceList.YouTube;
     }
@@ -101,7 +122,7 @@ public final class Engine {
 
     /** 받기용: 한 번에 받을 수 있는(PROGRESSIVE) 소리 가운데 원래 언어, 가장 높은 음질 하나 */
     private static JSONObject audio(final String id) throws Exception {
-        final StreamInfo info = StreamInfo.getInfo(yt(), watchUrl(id));
+        final StreamInfo info = StreamInfo.getInfo(ko(yt().getStreamExtractor(watchUrl(id))));
         AudioStream best = null;
         for (AudioStream a : info.getAudioStreams()) {
             if (!a.isUrl() || a.getDeliveryMethod() != DeliveryMethod.PROGRESSIVE_HTTP) continue;
@@ -125,8 +146,11 @@ public final class Engine {
 
     /** 영상 보기용: 영상만(높은 화질), 소리만, 둘 다 든 것(낮은 화질). 제목을 누르면 보는 자세한 정보(날짜, 좋아요, 설명, 채널)도 */
     private static JSONObject streams(final String id) throws Exception {
-        final StreamInfo info = StreamInfo.getInfo(yt(), watchUrl(id));
+        final org.schabi.newpipe.extractor.stream.StreamExtractor ex = ko(yt().getStreamExtractor(watchUrl(id)));
+        final StreamInfo info = StreamInfo.getInfo(ex);
         final JSONObject r = base(info);
+        final String lt = localTitle(ex);
+        if (!lt.isEmpty()) r.put("title", lt);
         details(info, r);
         final JSONArray vo = new JSONArray();
         for (VideoStream v : info.getVideoOnlyStreams()) {
@@ -160,8 +184,8 @@ public final class Engine {
     }
 
     private static JSONObject search(final String query) throws Exception {
-        final SearchInfo info = SearchInfo.getInfo(yt(),
-                yt().getSearchQHFactory().fromQuery(query, Collections.singletonList("videos"), ""));
+        final SearchInfo info = SearchInfo.getInfo(koFetched(yt().getSearchExtractor(
+                yt().getSearchQHFactory().fromQuery(query, Collections.singletonList("videos"), ""))));
         return new JSONObject().put("items", items(info.getRelatedItems()));
     }
 
@@ -227,8 +251,8 @@ public final class Engine {
     }
 
     private static List<InfoItem> videoSearch(final String q) throws Exception {
-        return SearchInfo.getInfo(yt(),
-                yt().getSearchQHFactory().fromQuery(q, Collections.singletonList("videos"), "")).getRelatedItems();
+        return SearchInfo.getInfo(koFetched(yt().getSearchExtractor(
+                yt().getSearchQHFactory().fromQuery(q, Collections.singletonList("videos"), "")))).getRelatedItems();
     }
 
     /** 검색 결과 모두(쇼츠는 뺌), 공식 음원 표시(official) 붙여서 */
@@ -408,7 +432,7 @@ public final class Engine {
     }
 
     private static JSONObject related(final String id) throws Exception {
-        final StreamInfo info = StreamInfo.getInfo(yt(), watchUrl(id));
+        final StreamInfo info = StreamInfo.getInfo(ko(yt().getStreamExtractor(watchUrl(id))));
         return new JSONObject().put("items", items(info.getRelatedItems()));
     }
 
@@ -420,6 +444,59 @@ public final class Engine {
                 .put("duration", info.getDuration())
                 .put("views", info.getViewCount())
                 .put("thumb", bestThumb(info.getThumbnails()));
+    }
+
+    /**
+     * 이 나라 말 제목(형님 2026-11-13 "한국 영상인데 가끔 제목이 영어로 나온다"). 올린 이가 제목을 여러 말로 달아 두면
+     * 유튜브는 보는 사람 말(hl=ko)에 맞는 제목을 보기 화면(next 응답의 videoPrimaryInfoRenderer)에 주는데, NewPipe 의 getName 은
+     * 원래 말 제목(player 응답의 videoDetails)을 먼저 쓴다. 그래서 NewPipe 가 이미 받아 둔 next 응답에서 꺼낸다(요청을 더 하지 않음).
+     * 못 꺼내면 ""(NewPipe 제목 그대로).
+     */
+    private static String localTitle(final Object extractor) {
+        try {
+            final java.lang.reflect.Field f = extractor.getClass().getDeclaredField("nextResponse");
+            f.setAccessible(true);
+            final Object next = f.get(extractor);
+            if (!(next instanceof java.util.Map)) return "";
+            final String t = primaryTitle(new JSONObject((java.util.Map<?, ?>) next), 0);
+            return t == null ? "" : t.trim();
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    private static String primaryTitle(final Object o, final int depth) {
+        if (depth > 30) return null;
+        if (o instanceof JSONObject) {
+            final JSONObject j = (JSONObject) o;
+            final JSONObject vp = j.optJSONObject("videoPrimaryInfoRenderer");
+            if (vp != null) {
+                final JSONObject t = vp.optJSONObject("title");
+                if (t != null) {
+                    if (t.has("simpleText")) return t.optString("simpleText");
+                    final JSONArray runs = t.optJSONArray("runs");
+                    if (runs != null) {
+                        final StringBuilder b = new StringBuilder();
+                        for (int i = 0; i < runs.length(); i++) {
+                            final JSONObject x = runs.optJSONObject(i);
+                            if (x != null) b.append(x.optString("text"));
+                        }
+                        if (b.length() > 0) return b.toString();
+                    }
+                }
+            }
+            for (java.util.Iterator<String> it = j.keys(); it.hasNext(); ) {
+                final String t = primaryTitle(j.opt(it.next()), depth + 1);
+                if (t != null) return t;
+            }
+        } else if (o instanceof JSONArray) {
+            final JSONArray a = (JSONArray) o;
+            for (int i = 0; i < a.length(); i++) {
+                final String t = primaryTitle(a.opt(i), depth + 1);
+                if (t != null) return t;
+            }
+        }
+        return null;
     }
 
     /**
@@ -524,13 +601,13 @@ public final class Engine {
         final JSONObject pj = q.optJSONObject("page");
         if (pj == null) {
             final org.schabi.newpipe.extractor.comments.CommentsInfo info =
-                    org.schabi.newpipe.extractor.comments.CommentsInfo.getInfo(yt(), url);
+                    org.schabi.newpipe.extractor.comments.CommentsInfo.getInfo(ko(yt().getCommentsExtractor(url)));
             r.put("count", info.getCommentsCount()).put("disabled", info.isCommentsDisabled());
             list = info.getRelatedItems();
             next = info.getNextPage();
         } else {
             final org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<org.schabi.newpipe.extractor.comments.CommentsInfoItem> pg =
-                    org.schabi.newpipe.extractor.comments.CommentsInfo.getMoreItems(yt(), url, pageOf(pj));
+                    ko(yt().getCommentsExtractor(url)).getPage(pageOf(pj));
             list = pg.getItems();
             next = pg.getNextPage();
         }
@@ -572,7 +649,7 @@ public final class Engine {
         final org.schabi.newpipe.extractor.linkhandler.ListLinkHandler handler;
         if (pj == null) {
             final org.schabi.newpipe.extractor.channel.ChannelInfo ci =
-                    org.schabi.newpipe.extractor.channel.ChannelInfo.getInfo(yt(), q.getString("url"));
+                    org.schabi.newpipe.extractor.channel.ChannelInfo.getInfo(koFetched(yt().getChannelExtractor(q.getString("url"))));
             r.put("name", ci.getName() == null ? "" : ci.getName())
                     .put("avatar", bestThumb(ci.getAvatars()))
                     .put("banner", bestThumb(ci.getBanners()))
@@ -590,7 +667,7 @@ public final class Engine {
             r.put("tabs", tabs);
             if (pick == null) return r.put("items", new JSONArray());
             final org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo ti =
-                    org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getInfo(yt(), pick);
+                    org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getInfo(koFetched(yt().getChannelTabExtractor(pick)));
             if ("popular".equals(q.optString("sort")) && org.schabi.newpipe.extractor.Page.isValid(ti.getNextPage())) {
                 final org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<InfoItem> pop = popular(pick, ti.getNextPage(), ci.getId(), tab);
                 if (pop != null) {
@@ -605,7 +682,7 @@ public final class Engine {
         }
         handler = yt().getChannelTabLHFactory().fromQuery(q.getString("cid"), Collections.singletonList(tab), "");
         final org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<InfoItem> pg =
-                org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getMoreItems(yt(), handler, pageOf(pj));
+                ko(yt().getChannelTabExtractor(handler)).getPage(pageOf(pj));
         r.put("items", items(pg.getItems()));
         if (org.schabi.newpipe.extractor.Page.isValid(pg.getNextPage())) r.put("next", pageJson(pg.getNextPage()));
         return r;
@@ -640,7 +717,7 @@ public final class Engine {
                     next.getIds(), next.getCookies(), b2.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             HttpDownloader.RELOAD_AS_APPEND.set(Boolean.TRUE);
             try {
-                return org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getMoreItems(yt(), tabHandler, p);
+                return ko(yt().getChannelTabExtractor(tabHandler)).getPage(p);
             } finally {
                 HttpDownloader.RELOAD_AS_APPEND.remove();
             }

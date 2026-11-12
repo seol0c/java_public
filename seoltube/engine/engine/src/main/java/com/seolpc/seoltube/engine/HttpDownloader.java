@@ -102,6 +102,7 @@ final class HttpDownloader extends Downloader {
                 if (in != null) body = readAll(in);
             }
             if (Boolean.TRUE.equals(RELOAD_AS_APPEND.get()) && body.contains("reloadContinuationItemsCommand")) body = reloadAsAppend(body);
+            if (url.contains("youtube.com") && (body.contains("만") || body.contains("천") || body.contains("억"))) body = fullCounts(body);
             return new Response(code, c.getResponseMessage(), c.getHeaderFields(), body,
                     c.getURL().toString());
         } finally {
@@ -139,6 +140,36 @@ final class HttpDownloader extends Downloader {
         } catch (Exception e) {
             return body;
         }
+    }
+
+    /** 조회수 7.4만회, 구독자 1040만명, 좋아요 1.2천개 같은 줄인 한국어 수를 74000회처럼 푼다(NewPipe 가 한국어로 물을 때 바로 읽게) */
+    private static final java.util.regex.Pattern KO_COUNT =
+            java.util.regex.Pattern.compile("(조회수\\s?|구독자\\s?|좋아요\\s?)(\\d+(?:\\.\\d+)?)(천|만|억)(회|명|개)");
+
+    /** 수만 든 글(목록의 조회수 "840만", 댓글 좋아요 "4.6천"): JSON 글 값 전체가 수와 단위일 때만 */
+    private static final java.util.regex.Pattern KO_BARE =
+            java.util.regex.Pattern.compile("\"(\\d+(?:\\.\\d+)?)(천|만|억)\"");
+
+    static String fullCounts(final String body) {
+        return expand(expand(body, KO_COUNT, true), KO_BARE, false);
+    }
+
+    private static String expand(final String body, final java.util.regex.Pattern p, final boolean words) {
+        final java.util.regex.Matcher m = p.matcher(body);
+        if (!m.find()) return body;
+        m.reset();
+        final StringBuffer b = new StringBuffer();
+        while (m.find()) {
+            final int g = words ? 2 : 1;
+            final double v = Double.parseDouble(m.group(g));
+            final String unit = m.group(g + 1);
+            final long mul = "천".equals(unit) ? 1000L : "만".equals(unit) ? 10000L : 100000000L;
+            final String num = Long.toString(Math.round(v * mul));   // 쉼표 없이(NewPipe 가 한국어일 때 74,000 을 740 으로 읽음)
+            final String out = words ? m.group(1) + num + m.group(4) : "\"" + num + "\"";
+            m.appendReplacement(b, java.util.regex.Matcher.quoteReplacement(out));
+        }
+        m.appendTail(b);
+        return b.toString();
     }
 
     private static String readAll(final InputStream in) throws IOException {
