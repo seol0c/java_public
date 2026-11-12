@@ -119,10 +119,11 @@ public final class Engine {
         return r.put("audio", s);
     }
 
-    /** 영상 보기용: 영상만(높은 화질), 소리만, 둘 다 든 것(낮은 화질) */
+    /** 영상 보기용: 영상만(높은 화질), 소리만, 둘 다 든 것(낮은 화질). 제목을 누르면 보는 자세한 정보(날짜, 좋아요, 설명, 채널)도 */
     private static JSONObject streams(final String id) throws Exception {
         final StreamInfo info = StreamInfo.getInfo(yt(), watchUrl(id));
         final JSONObject r = base(info);
+        details(info, r);
         final JSONArray vo = new JSONArray();
         for (VideoStream v : info.getVideoOnlyStreams()) {
             if (!v.isUrl()) continue;
@@ -415,6 +416,36 @@ public final class Engine {
                 .put("duration", info.getDuration())
                 .put("views", info.getViewCount())
                 .put("thumb", bestThumb(info.getThumbnails()));
+    }
+
+    /**
+     * 자세한 정보(형님 2026-11-12 "제목을 누르면 전체 정보, 어디서 몇 만, 날짜까지"). 못 읽은 것은 비워 둔다.
+     * date: 올린 날 yyyy-mm-dd(없으면 유튜브 글 그대로), likes, subs: 모르면 -1, desc: 설명 글(줄바꿈 살림), channel: 채널 주소
+     */
+    private static void details(final StreamInfo info, final JSONObject r) throws Exception {
+        String date = "";
+        try {
+            if (info.getUploadDate() != null) date = info.getUploadDate().offsetDateTime().toLocalDate().toString();
+        } catch (Exception ignored) {
+        }
+        if (date.isEmpty() && info.getTextualUploadDate() != null) date = info.getTextualUploadDate();
+        String desc = "";
+        try {
+            if (info.getDescription() != null && info.getDescription().content() != null) {
+                desc = info.getDescription().content();
+                if (info.getDescription().type() == org.schabi.newpipe.extractor.stream.Description.Type.HTML) {
+                    desc = desc.replaceAll("(?i)<br\\s*/?>", "\n").replaceAll("<[^>]+>", "");
+                    desc = org.jsoup.parser.Parser.unescapeEntities(desc, false);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        r.put("date", date)
+                .put("likes", info.getLikeCount())
+                .put("subs", info.getUploaderSubscriberCount())
+                .put("desc", desc)
+                .put("channel", info.getUploaderUrl() == null ? "" : info.getUploaderUrl())
+                .put("avatar", bestThumb(info.getUploaderAvatars()));
     }
 
     private static JSONArray items(final List<? extends InfoItem> list) throws Exception {
