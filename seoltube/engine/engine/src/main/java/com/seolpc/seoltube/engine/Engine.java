@@ -27,6 +27,7 @@ import java.util.List;
  * 요청 {"m":"init","cache":폴더} {"m":"version"} {"m":"audio","id":"영상ID"} {"m":"streams","id":..} {"m":"search","q":..} {"m":"related","id":..} {"m":"suggest","q":..} {"m":"music","q":..,"part":0|1|2} {"m":"shorts","token"?,"vd"?,"cv"?,"seed"?} {"m":"shortsSearch","q":..}
  * {"m":"comments","id":..,"page"?:{..}} (page 는 앞 응답의 next 또는 댓글의 replies 를 그대로)
  * {"m":"heatmap","id":..} 많이 본 구간
+ * {"m":"channel","url":채널 주소,"tab":"videos"|"shorts","cid"?,"page"?} 채널(처음: 이름, 그림, 구독자 + 목록. 다음: cid 와 page 로 목록만)
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -63,6 +64,7 @@ public final class Engine {
                 case "shortsSearch": r = shortsSearch(q.getString("q")); break;
                 case "comments": r = comments(q); break;
                 case "heatmap": r = heatmap(q.getString("id")); break;
+                case "channel": r = channel(q); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -491,6 +493,8 @@ public final class Engine {
                     .put("duration", s.getDuration())
                     .put("views", s.getViewCount())
                     .put("shorts", s.isShortFormContent())
+                    .put("when", s.getTextualUploadDate() == null ? "" : s.getTextualUploadDate())
+                    .put("channel", s.getUploaderUrl() == null ? "" : s.getUploaderUrl())
                     .put("thumb", bestThumb(s.getThumbnails())));
         }
         return a;
@@ -540,6 +544,50 @@ public final class Engine {
         }
         r.put("items", a);
         if (org.schabi.newpipe.extractor.Page.isValid(next)) r.put("next", pageJson(next));
+        return r;
+    }
+
+    /**
+     * 채널(형님 2026-11-12 "올린 이를 누르면 그 채널로"). tab: videos(기본) 또는 shorts.
+     * 처음(page 없음): {name, avatar, banner, subs, cid, tabs:[videos,shorts 중 있는 것], items, next?}
+     * 다음(page 있음, cid 는 처음 응답의 것): {items, next?}
+     */
+    private static JSONObject channel(final JSONObject q) throws Exception {
+        final String tab = "shorts".equals(q.optString("tab")) ? org.schabi.newpipe.extractor.channel.tabs.ChannelTabs.SHORTS
+                : org.schabi.newpipe.extractor.channel.tabs.ChannelTabs.VIDEOS;
+        final JSONObject r = new JSONObject();
+        final JSONObject pj = q.optJSONObject("page");
+        final org.schabi.newpipe.extractor.linkhandler.ListLinkHandler handler;
+        if (pj == null) {
+            final org.schabi.newpipe.extractor.channel.ChannelInfo ci =
+                    org.schabi.newpipe.extractor.channel.ChannelInfo.getInfo(yt(), q.getString("url"));
+            r.put("name", ci.getName() == null ? "" : ci.getName())
+                    .put("avatar", bestThumb(ci.getAvatars()))
+                    .put("banner", bestThumb(ci.getBanners()))
+                    .put("subs", ci.getSubscriberCount())
+                    .put("cid", ci.getId() == null ? "" : ci.getId());
+            org.schabi.newpipe.extractor.linkhandler.ListLinkHandler pick = null;
+            final JSONArray tabs = new JSONArray();
+            if (ci.getTabs() != null) for (org.schabi.newpipe.extractor.linkhandler.ListLinkHandler t : ci.getTabs()) {
+                final List<String> f = t.getContentFilters();
+                if (f == null || f.isEmpty()) continue;
+                if (f.contains(org.schabi.newpipe.extractor.channel.tabs.ChannelTabs.VIDEOS)) tabs.put("videos");
+                if (f.contains(org.schabi.newpipe.extractor.channel.tabs.ChannelTabs.SHORTS)) tabs.put("shorts");
+                if (f.contains(tab)) pick = t;
+            }
+            r.put("tabs", tabs);
+            if (pick == null) return r.put("items", new JSONArray());
+            final org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo ti =
+                    org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getInfo(yt(), pick);
+            r.put("items", items(ti.getRelatedItems()));
+            if (org.schabi.newpipe.extractor.Page.isValid(ti.getNextPage())) r.put("next", pageJson(ti.getNextPage()));
+            return r;
+        }
+        handler = yt().getChannelTabLHFactory().fromQuery(q.getString("cid"), Collections.singletonList(tab), "");
+        final org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<InfoItem> pg =
+                org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getMoreItems(yt(), handler, pageOf(pj));
+        r.put("items", items(pg.getItems()));
+        if (org.schabi.newpipe.extractor.Page.isValid(pg.getNextPage())) r.put("next", pageJson(pg.getNextPage()));
         return r;
     }
 
