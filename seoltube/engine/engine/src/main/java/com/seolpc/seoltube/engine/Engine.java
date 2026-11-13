@@ -818,7 +818,7 @@ public final class Engine {
         final List<java.util.concurrent.Future<JSONArray>> fs = new java.util.ArrayList<>();
         for (int i = 0; i < ch.length() && i < 300; i++) {
             final String url = ch.optString(i);
-            fs.add(pool.submit(() -> items(org.schabi.newpipe.extractor.feed.FeedInfo.getInfo(yt(), url).getRelatedItems())));
+            fs.add(pool.submit(() -> channelNew(url)));
         }
         int failed = 0;
         for (java.util.concurrent.Future<JSONArray> f : fs) {
@@ -831,6 +831,33 @@ public final class Engine {
         }
         pool.shutdownNow();
         return new JSONObject().put("items", out).put("failed", failed);
+    }
+
+    /**
+     * 한 채널의 새 영상. 먼저 유튜브 RSS(가벼움), RSS 가 안 되면(유튜브 RSS 가 가끔 404, 형님 2026-11-13 "구독 새 영상이 계속 돌기만")
+     * 채널의 영상 탭 첫 쪽(최신순, 한국어로)에서 15개.
+     */
+    private static JSONArray channelNew(final String url) throws Exception {
+        try {
+            final JSONArray a = items(org.schabi.newpipe.extractor.feed.FeedInfo.getInfo(yt(), url).getRelatedItems());
+            if (a.length() > 0) return a;
+        } catch (Exception ignored) {
+        }
+        final org.schabi.newpipe.extractor.channel.ChannelInfo ci =
+                org.schabi.newpipe.extractor.channel.ChannelInfo.getInfo(koFetched(yt().getChannelExtractor(url)));
+        if (ci.getTabs() != null) for (org.schabi.newpipe.extractor.linkhandler.ListLinkHandler t : ci.getTabs()) {
+            final List<String> f = t.getContentFilters();
+            if (f == null || !f.contains(org.schabi.newpipe.extractor.channel.tabs.ChannelTabs.VIDEOS)) continue;
+            final JSONArray all = items(org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo.getInfo(koFetched(yt().getChannelTabExtractor(t))).getRelatedItems());
+            final JSONArray out = new JSONArray();
+            for (int i = 0; i < all.length() && i < 15; i++) {
+                final JSONObject o = all.getJSONObject(i);
+                if (o.optString("channel").isEmpty()) o.put("channel", url);   // 앱이 채널별로 거를 수 있게
+                out.put(o);
+            }
+            return out;
+        }
+        return new JSONArray();
     }
 
     /** NewPipe 의 Page 를 JSON 으로(앱은 안을 모르고 그대로 돌려준다) */
