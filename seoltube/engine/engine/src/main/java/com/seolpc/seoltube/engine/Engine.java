@@ -29,6 +29,7 @@ import java.util.List;
  * {"m":"heatmap","id":..} 많이 본 구간
  * {"m":"channel","url":채널 주소,"tab":"videos"|"shorts","sort"?:"popular","cid"?,"page"?} 채널(처음: 이름, 그림, 구독자 + 목록. 다음: cid 와 page 로 목록만)
  * {"m":"feed","channels":[채널 주소...]} 구독한 채널들의 새 영상(RSS)
+ * {"m":"radio","id":..,"page"?} 노래 라디오(유튜브 뮤직처럼 이 곡에서 이어지는 노래들, 자동 믹스 RDAMVM)
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -67,6 +68,7 @@ public final class Engine {
                 case "heatmap": r = heatmap(q.getString("id")); break;
                 case "channel": r = channel(q); break;
                 case "feed": r = feed(q); break;
+                case "radio": r = radio(q); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -858,6 +860,30 @@ public final class Engine {
             return out;
         }
         return new JSONArray();
+    }
+
+    /**
+     * 노래 라디오(형님 2026-11-17 "노래로 틀면 관련 영상 말고 유튜브 뮤직, YMusic 처럼 노래들 목록이 알아서 들어가게").
+     * 유튜브 뮤직의 곡 라디오 믹스(list=RDAMVM + 영상 ID)를 NewPipe 의 믹스 목록으로 읽는다(처음 25곡쯤, 다음 쪽으로 더).
+     * 응답 {items:[...], next?}. 첫 곡은 이 곡 자신.
+     */
+    private static JSONObject radio(final JSONObject q) throws Exception {
+        final String id = q.getString("id");
+        final String url = "https://www.youtube.com/watch?v=" + id + "&list=RDAMVM" + id;
+        final JSONObject pj = q.optJSONObject("page");
+        final org.schabi.newpipe.extractor.playlist.PlaylistExtractor ex = ko(yt().getPlaylistExtractor(url));
+        final JSONObject r = new JSONObject();
+        if (pj == null) {
+            ex.fetchPage();
+            final org.schabi.newpipe.extractor.playlist.PlaylistInfo pi = org.schabi.newpipe.extractor.playlist.PlaylistInfo.getInfo(ex);
+            r.put("items", items(pi.getRelatedItems()));
+            if (org.schabi.newpipe.extractor.Page.isValid(pi.getNextPage())) r.put("next", pageJson(pi.getNextPage()));
+        } else {
+            final org.schabi.newpipe.extractor.ListExtractor.InfoItemsPage<org.schabi.newpipe.extractor.stream.StreamInfoItem> pg = ex.getPage(pageOf(pj));
+            r.put("items", items(pg.getItems()));
+            if (org.schabi.newpipe.extractor.Page.isValid(pg.getNextPage())) r.put("next", pageJson(pg.getNextPage()));
+        }
+        return r;
     }
 
     /** NewPipe 의 Page 를 JSON 으로(앱은 안을 모르고 그대로 돌려준다) */
