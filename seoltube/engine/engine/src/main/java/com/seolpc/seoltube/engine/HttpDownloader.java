@@ -1,19 +1,29 @@
 package com.seolpc.seoltube.engine;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.schabi.newpipe.extractor.downloader.Downloader;
 import org.schabi.newpipe.extractor.downloader.Request;
 import org.schabi.newpipe.extractor.downloader.Response;
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** NewPipe 가 인터넷에 묻는 통로. 안드로이드 기본 HttpURLConnection 만 쓴다. */
 final class HttpDownloader extends Downloader {
@@ -25,39 +35,48 @@ final class HttpDownloader extends Downloader {
      * 영상 주소를 풀려면 이 스크립트가 필요한데, 앱을 켤 때마다 다시 받으면 첫 재생이 느리다
      * (형님 2026-11-11 "그냥 캐시로만, 누르면 그거에 집중"). 주소에 판 번호가 있어 판이 바뀌면 새로 받는다. 최신 하나만 남긴다.
      */
-    static volatile java.io.File jsCacheDir;
+    static volatile File jsCacheDir;
 
     /** 이 스레드의 다음 응답에서 reloadContinuationItemsCommand 를 appendContinuationItemsAction 으로(채널 인기순 첫 쪽, Engine.popular) */
     static final ThreadLocal<Boolean> RELOAD_AS_APPEND = new ThreadLocal<>();
 
-    private static java.io.File jsFile(final String url) {
-        final java.io.File d = jsCacheDir;
+    private static File jsFile(final String url) {
+        final File d = jsCacheDir;
         if (d == null || !url.contains("/s/player/") || !url.endsWith("base.js")) return null;
-        return new java.io.File(d, Integer.toHexString(url.hashCode()) + ".js");
+        return new File(d, Integer.toHexString(url.hashCode()) + ".js");
     }
 
     @Override
     public Response execute(final Request request) throws IOException, ReCaptchaException {
         final String url = request.url();
-        final java.io.File jf = "GET".equals(request.httpMethod()) ? jsFile(url) : null;
+        final File jf = "GET".equals(request.httpMethod()) ? jsFile(url) : null;
         if (jf != null && jf.isFile() && jf.length() > 0) {
-            try (java.io.InputStream in = new java.io.FileInputStream(jf)) {
+            try (InputStream in = new FileInputStream(jf)) {
                 return new Response(200, "OK (cache)", null, readAll(in), url);
             }
         }
         final Response r = executeNet(request);
         if (jf != null && r.responseCode() == 200 && r.responseBody().length() > 1000) {
+            File tmp = null;
             try {
                 jf.getParentFile().mkdirs();
-                final java.io.File tmp = new java.io.File(jf.getPath() + ".tmp");
-                try (java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
+                // 받는 것마다 다른 임시 파일에 다 쓰고 이름만 바꾼다(동시에 둘이 받아도 서로 덮거나 반쯤 쓴 것을 읽지 않게)
+                tmp = File.createTempFile(jf.getName() + "-", ".tmp", jf.getParentFile());
+                try (OutputStream out = new FileOutputStream(tmp)) {
                     out.write(r.responseBody().getBytes(StandardCharsets.UTF_8));
                 }
-                tmp.renameTo(jf);
-                // 최신 하나만 남김(방금 받은 것 말고는 지움)
-                final java.io.File[] all = jf.getParentFile().listFiles((x, n) -> n.endsWith(".js"));
-                if (all != null) for (java.io.File f : all) if (!f.getName().equals(jf.getName())) f.delete();
+                if (tmp.renameTo(jf)) tmp = null;
+                // 최신 하나만 남김(방금 받은 것 말고는 지움). 남은 임시 파일도 1분 지난 것은 지움(지금 쓰는 중인 것은 두고)
+                final long old = System.currentTimeMillis() - 60_000L;
+                final File[] all = jf.getParentFile().listFiles((x, n) -> n.endsWith(".js") || n.endsWith(".tmp"));
+                if (all != null) for (File f : all) {
+                    if (f.getName().equals(jf.getName())) continue;
+                    if (f.getName().endsWith(".tmp") && f.lastModified() > old) continue;
+                    f.delete();
+                }
             } catch (Exception ignored) {
+            } finally {
+                if (tmp != null) tmp.delete();
             }
         }
         return r;
@@ -116,24 +135,24 @@ final class HttpDownloader extends Downloader {
      */
     private static String reloadAsAppend(final String body) {
         try {
-            final org.json.JSONObject j = new org.json.JSONObject(body);
-            final org.json.JSONArray acts = j.optJSONArray("onResponseReceivedActions");
+            final JSONObject j = new JSONObject(body);
+            final JSONArray acts = j.optJSONArray("onResponseReceivedActions");
             if (acts == null) return body;
-            final org.json.JSONArray out = new org.json.JSONArray();
+            final JSONArray out = new JSONArray();
             for (int i = 0; i < acts.length(); i++) {
-                final org.json.JSONObject a = acts.optJSONObject(i);
+                final JSONObject a = acts.optJSONObject(i);
                 if (a == null) continue;
-                final org.json.JSONObject rc = a.optJSONObject("reloadContinuationItemsCommand");
+                final JSONObject rc = a.optJSONObject("reloadContinuationItemsCommand");
                 if (rc == null) {
                     out.put(a);
                     continue;
                 }
-                final org.json.JSONArray items = rc.optJSONArray("continuationItems");
+                final JSONArray items = rc.optJSONArray("continuationItems");
                 if (items == null) continue;
                 final String s = items.toString();
                 if (!s.contains("richItemRenderer") && !s.contains("continuationItemRenderer")) continue;   // 칩 줄
-                out.put(new org.json.JSONObject().put("appendContinuationItemsAction",
-                        new org.json.JSONObject().put("continuationItems", items)));
+                out.put(new JSONObject().put("appendContinuationItemsAction",
+                        new JSONObject().put("continuationItems", items)));
             }
             j.put("onResponseReceivedActions", out);
             return j.toString();
@@ -142,31 +161,97 @@ final class HttpDownloader extends Downloader {
         }
     }
 
-    /** 조회수 7.4만회, 구독자 1040만명, 좋아요 1.2천개 같은 줄인 한국어 수를 74000회처럼 푼다(NewPipe 가 한국어로 물을 때 바로 읽게) */
-    private static final java.util.regex.Pattern KO_COUNT =
-            java.util.regex.Pattern.compile("(조회수\\s?|구독자\\s?|좋아요\\s?)(\\d+(?:\\.\\d+)?)(천|만|억)(회|명|개)");
+    /**
+     * 조회수 7.4만회, 구독자 1040만명, 좋아요 1.2천개 같은 줄인 한국어 수를 74000회처럼 푼다(NewPipe 가 한국어로 물을 때 바로 읽게).
+     * 응답 전체가 아니라 NewPipe 가 수를 읽는 칸 안에서만 푼다(제목, 설명, 댓글 글의 "구독자 1만명" 같은 것은 그대로).
+     * COUNT_KEYS: 수만 담는 칸(안의 글을 모두 푼다). MIXED_KEYS: 수와 다른 글이 섞인 칸(올린 이 이름 등, 글 값 전체가 수일 때만 푼다).
+     */
+    private static final Pattern KEY = Pattern.compile(
+            "\"(viewCountText|shortViewCountText|viewCount|shortViewCount|subscriberCountText|videoCountText|voteCount"
+                    + "|likeCountNotliked|likeCountLiked|replyCount"
+                    + "|metadataParts|secondaryText|videoInfo|segmentedLikeDislikeButtonViewModel|segmentedLikeDislikeButtonRenderer|likeButtonViewModel)\":");
+    private static final Set<String> MIXED_KEYS = new HashSet<>(Arrays.asList(
+            "metadataParts", "secondaryText", "videoInfo", "segmentedLikeDislikeButtonViewModel", "segmentedLikeDislikeButtonRenderer", "likeButtonViewModel"));
 
-    /** 수만 든 글(목록의 조회수 "840만", 댓글 좋아요 "4.6천"): JSON 글 값 전체가 수와 단위일 때만 */
-    private static final java.util.regex.Pattern KO_BARE =
-            java.util.regex.Pattern.compile("\"(\\d+(?:\\.\\d+)?)(천|만|억)\"");
+    /** 글 안 어디서나: 조회수 7.4만회 */
+    private static final Pattern KO_COUNT =
+            Pattern.compile("(조회수\\s?|구독자\\s?|좋아요\\s?)(\\d+(?:\\.\\d+)?)(천|만|억)(회|명|개)");
+
+    /** JSON 글 값 전체가 수(와 단위)일 때만: "840만", "4.6천", "조회수 840만회" */
+    private static final Pattern KO_WHOLE =
+            Pattern.compile("\"((?:조회수|구독자|좋아요)\\s?)?(\\d+(?:\\.\\d+)?)(천|만|억)(회|명|개)?\"");
 
     static String fullCounts(final String body) {
-        return expand(expand(body, KO_COUNT, true), KO_BARE, false);
+        final Matcher m = KEY.matcher(body);
+        StringBuilder b = null;
+        int last = 0, from = 0;
+        while (from < body.length() && m.find(from)) {
+            final int vs = m.end();
+            final int ve = valueEnd(body, vs);
+            if (ve <= vs) {
+                from = vs;
+                continue;
+            }
+            final String seg = body.substring(vs, ve);
+            final String rew = MIXED_KEYS.contains(m.group(1)) ? expand(seg, KO_WHOLE, true)
+                    : expand(expand(seg, KO_COUNT, false), KO_WHOLE, true);
+            if (!rew.equals(seg)) {
+                if (b == null) b = new StringBuilder(body.length() + 64);
+                b.append(body, last, vs).append(rew);
+                last = ve;
+            }
+            from = ve;
+        }
+        if (b == null) return body;
+        return b.append(body, last, body.length()).toString();
     }
 
-    private static String expand(final String body, final java.util.regex.Pattern p, final boolean words) {
-        final java.util.regex.Matcher m = p.matcher(body);
+    /** body[i] 에서 시작하는 JSON 값 하나(글, 객체, 배열, 수)의 끝 자리(다음 글자). 못 찾으면 -1 */
+    private static int valueEnd(final String s, int i) {
+        final int n = s.length();
+        while (i < n && Character.isWhitespace(s.charAt(i))) i++;
+        if (i >= n) return -1;
+        final char c0 = s.charAt(i);
+        if (c0 != '"' && c0 != '{' && c0 != '[') {
+            while (i < n && ",}]".indexOf(s.charAt(i)) < 0) i++;
+            return i;
+        }
+        int depth = 0;
+        boolean str = false;
+        for (; i < n; i++) {
+            final char c = s.charAt(i);
+            if (str) {
+                if (c == '\\') i++;
+                else if (c == '"') {
+                    str = false;
+                    if (depth == 0) return i + 1;   // 글 값 하나
+                }
+            } else if (c == '"') {
+                str = true;
+            } else if (c == '{' || c == '[') {
+                depth++;
+            } else if (c == '}' || c == ']') {
+                if (--depth == 0) return i + 1;
+            }
+        }
+        return -1;
+    }
+
+    /** 무리 1 앞말, 2 수, 3 단위, 4 뒷말. quoted 면 앞뒤 따옴표째 */
+    private static String expand(final String body, final Pattern p, final boolean quoted) {
+        final Matcher m = p.matcher(body);
         if (!m.find()) return body;
         m.reset();
         final StringBuffer b = new StringBuffer();
         while (m.find()) {
-            final int g = words ? 2 : 1;
-            final double v = Double.parseDouble(m.group(g));
-            final String unit = m.group(g + 1);
+            final double v = Double.parseDouble(m.group(2));
+            final String unit = m.group(3);
             final long mul = "천".equals(unit) ? 1000L : "만".equals(unit) ? 10000L : 100000000L;
             final String num = Long.toString(Math.round(v * mul));   // 쉼표 없이(NewPipe 가 한국어일 때 74,000 을 740 으로 읽음)
-            final String out = words ? m.group(1) + num + m.group(4) : "\"" + num + "\"";
-            m.appendReplacement(b, java.util.regex.Matcher.quoteReplacement(out));
+            final String pre = m.group(1) == null ? "" : m.group(1);
+            final String post = m.group(4) == null ? "" : m.group(4);
+            final String out = quoted ? "\"" + pre + num + post + "\"" : pre + num + post;
+            m.appendReplacement(b, Matcher.quoteReplacement(out));
         }
         m.appendTail(b);
         return b.toString();
