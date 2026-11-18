@@ -1,10 +1,11 @@
 {
-  "engine": 31,
+  "engine": 34,
   "api": 1,
   "newpipe": "v0.27.1",
-  "url": "https://github.com/seol0c/java_public/releases/download/seoltube-engine-31/seoltube-engine-31.apk",
-  "sha256": "ecd059b6a8cb7fef99d66d14358749980b980e544ba742c408dbd76610289adc",
-  "size": 3222791,
-  "sig": "MEUCIQCLpJ2ALXM1EDgRChyjhdUHqt1YxzlAzr3fYMknzrQhrwIgZQEGNbApdLW2WQz07EEEvAesdpocpwEjbFtAO4LZHNU=",
-  "built": "2026-11-17T05:45:30Z"
+  "url": "https://github.com/seol0c/java_public/releases/download/seoltube-engine-34/seoltube-engine-34.apk",
+  "sha256": "0d02c4d27ad6c3e5edb58049f24b5101ef5daa4f76cd79f01d5105b075ddd544",
+  "size": 3222643,
+  "sig": "MEQCIEfV2DAe5wwX+laNam00ma/uUqT+gVtnGXn1rrVHrvX+AiAGtT73kuO8fCyK0uM8OyeGxiL1HQiv5VH+z7eeGhyt3g==",
+  "msig": "MEQCIAxVgsjgsePTUCs4zWhD/PskFgrCZJGH8zA5YwqgrVWTAiBjxNvfP+MEqflrjk/oUDawTT5gwucX+UisKPQYM/AONQ==",
+  "built": "2026-11-18T18:21:21Z"
 }
