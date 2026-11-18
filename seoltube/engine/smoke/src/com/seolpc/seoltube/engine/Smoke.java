@@ -10,7 +10,9 @@ import org.json.JSONObject;
  */
 public final class Smoke {
     private static boolean blocked(final String err) {
-        return err.contains("SignInConfirmNotBot") || err.contains("ReCaptcha") || err.contains("not a bot");
+        // 유튜브가 빌드 서버 주소를 봇으로 보고 막은 것(영어, 한국어 문구, LOGIN_REQUIRED, 429)
+        return err.contains("SignInConfirmNotBot") || err.contains("ReCaptcha") || err.contains("not a bot")
+                || err.contains("LOGIN_REQUIRED") || err.contains("봇이 아님") || err.contains("Sign in to confirm") || err.contains("429");
     }
 
     private static JSONObject call(final Engine e, final JSONObject q) throws Exception {
