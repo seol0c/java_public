@@ -64,6 +64,7 @@ import java.util.regex.Pattern;
  * {"m":"channel","url":채널 주소,"tab":"videos"|"shorts","sort"?:"popular","cid"?,"page"?} 채널(처음: 이름, 그림, 구독자 + 목록. 다음: cid 와 page 로 목록만)
  * {"m":"feed","channels":[채널 주소...]} 구독한 채널들의 새 영상(RSS)
  * {"m":"radio","id":..,"page"?} 노래 라디오(유튜브 뮤직처럼 이 곡에서 이어지는 노래들, 자동 믹스 RDAMVM)
+ * {"m":"playlist","list":..,"page"?} 공개 재생목록 하나(차트 사이트가 막히면 공식 차트 재생목록)
  * 응답 {"ok":true, ...} 또는 {"ok":false,"error":"..."}
  * 응답에 칸을 더하는 것은 API 를 올리지 않는다(앱은 모르는 칸을 무시). 있던 칸을 바꾸거나 뺄 때만 올린다.
  */
@@ -103,6 +104,7 @@ public final class Engine {
                 case "channel": r = channel(q); break;
                 case "feed": r = feed(q); break;
                 case "radio": r = radio(q); break;
+                case "playlist": r = playlist(q); break;
                 default: throw new IllegalArgumentException("모르는 요청: " + m);
             }
             return r.put("ok", true).toString();
@@ -859,6 +861,31 @@ public final class Engine {
         if (pj == null) {
             ex.fetchPage();
             final PlaylistInfo pi = PlaylistInfo.getInfo(ex);
+            r.put("items", items(pi.getRelatedItems()));
+            if (Page.isValid(pi.getNextPage())) r.put("next", pageJson(pi.getNextPage()));
+        } else {
+            final ListExtractor.InfoItemsPage<StreamInfoItem> pg = ex.getPage(pageOf(pj));
+            r.put("items", items(pg.getItems()));
+            if (Page.isValid(pg.getNextPage())) r.put("next", pageJson(pg.getNextPage()));
+        }
+        return r;
+    }
+
+    /**
+     * 공개 재생목록 하나(형님 2026-11-20 "인기 쪽 왜 받지 못함만 뜨냐"): 유튜브 차트 사이트가 앱의 요청에 403 을 주기 시작해서,
+     * 앱은 차트 사이트가 안 되면 유튜브 공식 차트 재생목록(YouTube Music Global Charts 의 "한국 인기곡 Top100" 등)을 이것으로 받는다.
+     * 요청 {list: 재생목록 ID, page?}. 응답 {items:[...], next?, name?}(라디오와 같은 줄 모양, 순서 = 재생목록 순서).
+     */
+    private static JSONObject playlist(final JSONObject q) throws Exception {
+        final String list = q.getString("list");
+        if (!list.matches("[A-Za-z0-9_-]{2,64}")) throw new IllegalArgumentException("재생목록 ID 가 이상합니다");
+        final PlaylistExtractor ex = ko(yt().getPlaylistExtractor("https://www.youtube.com/playlist?list=" + list));
+        final JSONObject pj = q.optJSONObject("page");
+        final JSONObject r = new JSONObject();
+        if (pj == null) {
+            ex.fetchPage();
+            final PlaylistInfo pi = PlaylistInfo.getInfo(ex);
+            r.put("name", pi.getName());
             r.put("items", items(pi.getRelatedItems()));
             if (Page.isValid(pi.getNextPage())) r.put("next", pageJson(pi.getNextPage()));
         } else {
